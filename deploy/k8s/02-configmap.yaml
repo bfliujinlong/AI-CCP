@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aicc-config
+  namespace: aicc
+data:
+  MINIO_ENDPOINT: "aicc-minio:9000"
+  MINIO_BUCKET: "aicc-documents"
+  MINIO_SECURE: "false"
+  JWT_ALGORITHM: "HS256"
+  JWT_EXPIRE_MINUTES: "1440"
+  QWEN_MODEL: "qwen-plus"
+  CORS_ORIGINS: "https://aicc.yourdomain.com"
+  DATABASE_POOL_SIZE: "20"
+  DATABASE_MAX_OVERFLOW: "10"

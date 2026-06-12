@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aicc-redis
+  namespace: aicc
+  labels:
+    app: aicc-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aicc-redis
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: aicc-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: aicc-redis-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aicc-redis-pvc
+  namespace: aicc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: alicloud-disk-ssd
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aicc-redis
+  namespace: aicc
+spec:
+  selector:
+    app: aicc-redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+  clusterIP: None

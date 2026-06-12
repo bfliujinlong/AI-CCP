@@ -1,0 +1,110 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aicc-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aicc}
+      POSTGRES_USER: ${POSTGRES_USER:-aicc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aicc_secret_2024}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aicc}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: aicc-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: aicc-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-aicc_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-aicc_minio_secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aicc-backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-aicc}:${POSTGRES_PASSWORD:-aicc_secret_2024}@postgres:5432/${POSTGRES_DB:-aicc}
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-aicc_minio}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-aicc_minio_secret}
+      - JWT_SECRET=${JWT_SECRET:-aicc_jwt_secret_change_in_production}
+      - JWT_ALGORITHM=HS256
+      - JWT_EXPIRE_MINUTES=1440
+      - QWEN_API_KEY=${QWEN_API_KEY:-}
+      - QWEN_MODEL=${QWEN_MODEL:-qwen-plus}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost}
+      - LARK_APP_ID=${LARK_APP_ID:-}
+      - LARK_APP_SECRET=${LARK_APP_SECRET:-}
+      - OIDC_ISSUER=${OIDC_ISSUER:-}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-}
+      - WECOM_CORP_ID=${WECOM_CORP_ID:-}
+      - WECOM_AGENT_ID=${WECOM_AGENT_ID:-}
+      - WECOM_SECRET=${WECOM_SECRET:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aicc-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
