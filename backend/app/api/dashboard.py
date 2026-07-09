@@ -1,15 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import jwt, JWTError
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.services.factsheet_service import DashboardService
+from app.services.dashboard_service import DashboardService
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
-async def get_current_user(authorization: str = None) -> str:
+async def get_current_user(authorization: str = Header(None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
     token = authorization.split(" ")[1]
@@ -23,7 +23,7 @@ async def get_current_user(authorization: str = None) -> str:
 @router.get("/stats")
 async def get_dashboard_stats(
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    authorization: str = Header(None),
 ):
     await get_current_user(authorization)
     service = DashboardService(db)

@@ -59,6 +59,7 @@ services:
       dockerfile: Dockerfile
     container_name: aicc-backend
     environment:
+      - AUTO_CREATE_TABLES=false
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-aicc}:${POSTGRES_PASSWORD:-aicc_secret_2024}@postgres:5432/${POSTGRES_DB:-aicc}
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000

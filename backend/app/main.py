@@ -28,8 +28,11 @@ async def seed_initial_data():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # In development (no alembic), create tables automatically.
+    # In production, tables are managed by alembic (run before uvicorn starts).
+    if settings.AUTO_CREATE_TABLES:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     await seed_initial_data()
     yield
 

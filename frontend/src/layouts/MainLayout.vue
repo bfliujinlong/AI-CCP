@@ -67,19 +67,19 @@
             <el-icon><Setting /></el-icon>
             <span>管理</span>
           </template>
-          <el-menu-item index="/skills">
+          <el-menu-item index="/skills" @click="router.push('/skills')">
             <el-icon><SetUp /></el-icon>
             <template #title>Skill Center</template>
           </el-menu-item>
-          <el-menu-item index="/settings">
+          <el-menu-item index="/settings" @click="router.push('/settings')">
             <el-icon><Tools /></el-icon>
             <template #title>系统设置</template>
           </el-menu-item>
-          <el-menu-item index="/accounts">
+        <el-menu-item index="/accounts" @click="router.push('/accounts')">
             <el-icon><User /></el-icon>
             <template #title>账户管理</template>
           </el-menu-item>
-          <el-menu-item index="/test">
+          <el-menu-item index="/test" @click="router.push('/test')">
             <el-icon><Monitor /></el-icon>
             <template #title>测试页面</template>
           </el-menu-item>

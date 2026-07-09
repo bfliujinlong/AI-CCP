@@ -129,6 +129,38 @@
             <el-option label="高级" value="advanced" />
           </el-select>
         </el-form-item>
+
+        <el-divider content-position="left">架构与工作负载</el-divider>
+
+        <el-form-item label="架构类型">
+          <el-select v-model="createForm.facts.architecture_type" style="width: 100%" placeholder="请选择架构类型">
+            <el-option label="单体架构" value="monolith" />
+            <el-option label="微服务" value="microservice" />
+            <el-option label="混合架构" value="hybrid" />
+            <el-option label="Serverless" value="serverless" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="业务应用数" v-if="['migration', 'hybrid_cloud', 'big_data'].includes(createForm.facts.project_type)">
+          <el-input v-model.number="createForm.facts.app_count" type="number" :min="0" placeholder="业务应用系统数量" />
+        </el-form-item>
+        <el-form-item label="微服务数量" v-if="createForm.facts.architecture_type === 'microservice' || createForm.facts.architecture_type === 'hybrid'">
+          <el-input v-model.number="createForm.facts.microservice_count" type="number" :min="0" placeholder="微服务实例数量" />
+        </el-form-item>
+        <el-form-item label="K8s集群数" v-if="['migration', 'hybrid_cloud', 'landing_zone'].includes(createForm.facts.project_type)">
+          <el-input v-model.number="createForm.facts.k8s_cluster_count" type="number" :min="0" placeholder="Kubernetes 集群数量" />
+        </el-form-item>
+        <el-form-item label="容器实例数" v-if="['migration', 'hybrid_cloud', 'big_data'].includes(createForm.facts.project_type)">
+          <el-input v-model.number="createForm.facts.container_count" type="number" :min="0" placeholder="运行中的容器实例数量" />
+        </el-form-item>
+        <el-form-item label="API数量" v-if="['migration', 'hybrid_cloud', 'security'].includes(createForm.facts.project_type)">
+          <el-input v-model.number="createForm.facts.api_count" type="number" :min="0" placeholder="需迁移/集成的 API 接口数量" />
+        </el-form-item>
+        <el-form-item label="存储容量(TB)" v-if="['migration', 'big_data', 'hybrid_cloud'].includes(createForm.facts.project_type)">
+          <el-input v-model.number="createForm.facts.storage_tb" type="number" :min="0" placeholder="数据存储总量(TB)" />
+        </el-form-item>
+        <el-form-item label="带宽需求(Mbps)" v-if="['migration', 'hybrid_cloud'].includes(createForm.facts.project_type)">
+          <el-input v-model.number="createForm.facts.bandwidth_mbps" type="number" :min="0" placeholder="跨云/混合云带宽需求" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
@@ -166,6 +198,14 @@ const createForm = reactive({
     account_count: 1,
     vpc_count: 0,
     security_level: 'basic',
+    architecture_type: '',
+    app_count: 0,
+    microservice_count: 0,
+    k8s_cluster_count: 0,
+    container_count: 0,
+    api_count: 0,
+    storage_tb: 0,
+    bandwidth_mbps: 0,
   },
 })
 

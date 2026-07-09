@@ -1,26 +1,15 @@
+from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from jose import jwt, JWTError
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.opportunity import OpportunityCreate, OpportunityUpdate, OpportunityResponse, OpportunityListResponse
 from app.services.opportunity_service import OpportunityService
+from app.api.deps import get_current_user_id
 
 router = APIRouter(prefix="/opportunities", tags=["Opportunities"])
-
-
-async def get_current_user(authorization: str = None) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    token = authorization.split(" ")[1]
-    try:
-        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
-        return payload.get("sub")
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
 @router.get("", response_model=OpportunityListResponse)
@@ -31,9 +20,8 @@ async def list_opportunities(
     status: str | None = None,
     customer_id: UUID | None = None,
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    user_id: str = Depends(get_current_user_id),
 ):
-    await get_current_user(authorization)
     service = OpportunityService(db)
     opportunities, total = await service.get_list(
         page=page, page_size=page_size, search=search, status=status, customer_id=customer_id
@@ -49,9 +37,8 @@ async def list_opportunities(
 @router.get("/stats")
 async def get_opportunity_stats(
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    user_id: str = Depends(get_current_user_id),
 ):
-    await get_current_user(authorization)
     service = OpportunityService(db)
     return await service.get_stats()
 
@@ -60,9 +47,8 @@ async def get_opportunity_stats(
 async def get_opportunity(
     opportunity_id: UUID,
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    user_id: str = Depends(get_current_user_id),
 ):
-    await get_current_user(authorization)
     service = OpportunityService(db)
     opportunity = await service.get_by_id(opportunity_id)
     if not opportunity:
@@ -74,9 +60,8 @@ async def get_opportunity(
 async def create_opportunity(
     data: OpportunityCreate,
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    user_id: str = Depends(get_current_user_id),
 ):
-    user_id = await get_current_user(authorization)
     service = OpportunityService(db)
     opportunity = await service.create(data, owner_id=UUID(user_id))
     return opportunity
@@ -87,9 +72,8 @@ async def update_opportunity(
     opportunity_id: UUID,
     data: OpportunityUpdate,
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    user_id: str = Depends(get_current_user_id),
 ):
-    await get_current_user(authorization)
     service = OpportunityService(db)
     try:
         opportunity = await service.update(opportunity_id, data)
@@ -102,9 +86,8 @@ async def update_opportunity(
 async def delete_opportunity(
     opportunity_id: UUID,
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    user_id: str = Depends(get_current_user_id),
 ):
-    await get_current_user(authorization)
     service = OpportunityService(db)
     try:
         await service.delete(opportunity_id)

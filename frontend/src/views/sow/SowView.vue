@@ -38,9 +38,29 @@
             <div style="text-align: center; padding: 40px 0">
               <el-icon :size="80" color="#dcdfe6"><Notebook /></el-icon>
               <h3 style="color: #606266; margin: 16px 0">AI 自动生成 SOW</h3>
-              <p style="color: #909399; margin-bottom: 24px">
-                基于 Fact Sheet 数据，AI 将自动生成完整的工作说明书（Statement of Work）
+              <p style="color: #909399; margin-bottom: 12px">
+                基于报价评估数据和 Fact Sheet，AI 将自动生成完整的工作说明书（Statement of Work）
               </p>
+              <div v-if="projectTypeName" style="margin-bottom: 12px">
+                <span style="color: #606266; font-size: 14px; margin-right: 8px">项目类型:</span>
+                <el-tag :style="{ background: projectTypeColors[projectType] || '#409EFF', border: 'none', color: '#fff' }" size="large">
+                  {{ projectTypeName }}
+                </el-tag>
+              </div>
+              <div v-if="hasQuotation" style="margin-bottom: 16px; padding: 12px; background: #f0f9ff; border-radius: 8px; border: 1px solid #d0e8ff">
+                <div style="font-size: 14px; color: #409EFF; margin-bottom: 6px; font-weight: 600">已检测到报价数据</div>
+                <div style="font-size: 13px; color: #606266">
+                  总工时: <strong>{{ quotationTotalHours }} 人天</strong> |
+                  预计周期: <strong>{{ quotationTotalWeeks }} 周</strong> |
+                  <span style="color: #67C23A">SOW 将引用报价的阶段工时和团队配置</span>
+                </div>
+              </div>
+              <div v-else style="margin-bottom: 16px; padding: 10px; background: #fdf6ec; border-radius: 8px; border: 1px solid #faecd8">
+                <div style="font-size: 13px; color: #E6A23C">
+                  未检测到报价数据，SOW 将使用默认估算生成。
+                  <el-link type="primary" :underline="false" @click="$router.push(`/quotation/${opportunityId}`)">去生成报价</el-link>
+                </div>
+              </div>
               <el-button type="primary" size="large" :loading="generating" :disabled="!latestFactSheet" @click="generateSOW">
                 <el-icon><MagicStick /></el-icon> 生成 SOW
               </el-button>
@@ -178,6 +198,9 @@ import { useRoute } from 'vue-router'
 import { opportunityApi, factsheetApi } from '@/api'
 import { ElMessage } from 'element-plus'
 import dayjs from 'dayjs'
+import { exportDocument } from '@/utils/export'
+import { getJSON, setJSON } from '@/utils/db'
+import { generateSOWByType, getProjectTypeName } from '@/utils/sowTemplates'
 
 const route = useRoute()
 const opportunityId = route.params.opportunityId
@@ -190,21 +213,46 @@ const workflowStep = ref(3)
 
 const latestFactSheet = computed(() => factSheets.value.length > 0 ? factSheets.value[0] : null)
 const currentTime = computed(() => dayjs().format('YYYY-MM-DD HH:mm'))
+const projectType = computed(() => latestFactSheet.value?.facts?.project_type || '')
+const projectTypeName = computed(() => projectType.value ? getProjectTypeName(projectType.value) : '')
+const quotationData = computed(() => getJSON(`aicc_quotation_${opportunityId}`))
+const hasQuotation = computed(() => !!quotationData.value?.estimate)
+const quotationTotalHours = computed(() => quotationData.value?.estimate?.totalHours || 0)
+const quotationTotalWeeks = computed(() => quotationData.value?.estimate?.totalWeeks || 0)
+
+const projectTypeColors = {
+  landing_zone: '#409EFF', migration: '#F56C6C', big_data: '#E6A23C',
+  hybrid_cloud: '#67C23A', security: '#9B59B6', cost_optimization: '#909399',
+}
 
 const factLabels = {
   project_type: '项目类型', current_cloud: '当前云', target_cloud: '目标云',
   vm_count: 'VM数量', database_count: '数据库数量', region_count: 'Region数量',
   account_count: '账号数量', vpc_count: 'VPC数量', security_level: '安全等级',
+  architecture_type: '架构类型', app_count: '业务应用数', microservice_count: '微服务数量',
+  k8s_cluster_count: 'K8s集群数', container_count: '容器实例数', api_count: 'API数量',
+  storage_tb: '存储容量(TB)', bandwidth_mbps: '带宽需求(Mbps)',
 }
 function factLabel(key) { return factLabels[key] || key }
 
 onMounted(async () => {
   loading.value = true
   try {
-    const opp = await opportunityApi.get(opportunityId)
-    opportunityName.value = opp.name
+    try {
+      const opp = await opportunityApi.get(opportunityId)
+      opportunityName.value = opp.name
+    } catch (e) {
+      console.warn('[SowView] 加载商机信息失败，使用默认数据:', e)
+      opportunityName.value = '未知商机'
+    }
     factSheets.value = await factsheetApi.list(opportunityId)
     if (factSheets.value.length > 0) workflowStep.value = 3
+    // 加载已保存的 SOW
+    const saved = getJSON(`aicc_sow_${opportunityId}`)
+    if (saved) {
+      sowContent.value = saved
+      workflowStep.value = 4
+    }
   } finally {
     loading.value = false
   }
@@ -216,96 +264,86 @@ async function generateSOW() {
   try {
     const facts = latestFactSheet.value.facts
     const projectType = facts.project_type || 'landing_zone'
-    const targetCloud = facts.target_cloud || 'aliyun'
-    const vmCount = facts.vm_count || 0
-    const dbCount = facts.database_count || 0
-    const regionCount = facts.region_count || 1
-    const accountCount = facts.account_count || 1
-    const securityLevel = facts.security_level || 'basic'
+    const typeName = getProjectTypeName(projectType)
 
-    const cloudNames = { aws: 'AWS', azure: 'Azure', aliyun: '阿里云', huawei: '华为云', tencent: '腾讯云' }
-    const typeNames = { landing_zone: 'Landing Zone', migration: '云迁移', big_data: '大数据平台', hybrid_cloud: '混合云', security: '安全加固', cost_optimization: '成本优化' }
-    const secNames = { basic: '基础', medium: '中等', advanced: '高级' }
+    // 读取报价数据
+    const quotation = getJSON(`aicc_quotation_${opportunityId}`)
 
-    const cloudName = cloudNames[targetCloud] || targetCloud
-    const typeName = typeNames[projectType] || projectType
+    // 按项目类型 + 报价数据生成 SOW
+    sowContent.value = generateSOWByType(projectType, facts, quotation, opportunityName.value)
 
-    sowContent.value = {
-      title: `${opportunityName.value} - ${typeName}项目工作说明书`,
-      project_overview: `本项目旨在为${opportunityName.value}构建${cloudName}${typeName}解决方案。项目涵盖${vmCount}台虚拟机、${dbCount}个数据库的${projectType === 'migration' ? '迁移' : '管理'}，跨${regionCount}个Region，涉及${accountCount}个云账号，安全等级为${secNames[securityLevel] || securityLevel}。`,
-      scope: `本项目的工作范围包括${cloudName}${typeName}的架构设计、实施部署、测试验证和知识转移。具体范围如下表所示。`,
-      scope_items: projectType === 'landing_zone' ? [
-        { category: '架构设计', item: `${cloudName}多云账号体系设计`, included: true },
-        { category: '架构设计', item: '网络架构设计（VPC/子网/安全组）', included: true },
-        { category: '架构设计', item: '安全合规架构设计', included: true },
-        { category: '实施部署', item: `${accountCount}个云账号Landing Zone部署`, included: true },
-        { category: '实施部署', item: `${regionCount}个Region网络配置`, included: true },
-        { category: '实施部署', item: 'IAM策略与权限体系配置', included: true },
-        { category: '实施部署', item: '监控告警与日志体系搭建', included: true },
-        { category: '知识转移', item: '运维文档与培训', included: true },
-        { category: '不在范围', item: '业务应用迁移', included: false },
-        { category: '不在范围', item: '第三方软件许可', included: false },
-      ] : [
-        { category: '评估', item: `${vmCount}台VM和${dbCount}个数据库迁移评估`, included: true },
-        { category: '设计', item: '迁移方案设计', included: true },
-        { category: '实施', item: '分批迁移实施', included: true },
-        { category: '验证', item: '割接与数据一致性验证', included: true },
-        { category: '知识转移', item: '运维文档与培训', included: true },
-        { category: '不在范围', item: '新业务应用开发', included: false },
-      ],
-      deliverables: [
-        { name: `${typeName}架构设计文档`, description: '包含目标架构、网络拓扑、安全架构等', milestone: 'M1-设计阶段' },
-        { name: 'Landing Zone 部署报告', description: '部署配置清单、验证结果', milestone: 'M2-实施阶段' },
-        { name: '安全合规审计报告', description: '安全配置核查、合规检查结果', milestone: 'M2-实施阶段' },
-        { name: '运维手册', description: '日常运维操作手册、故障处理指南', milestone: 'M3-交付阶段' },
-        { name: '培训材料', description: '运维团队培训PPT及实操手册', milestone: 'M3-交付阶段' },
-      ],
-      assumptions: [
-        '客户已具备云平台账号及管理员权限',
-        '客户网络团队已准备好专线/VPN连接',
-        '业务团队可配合提供应用依赖关系信息',
-        '项目期间客户关键人员可参与评审会议',
-        '云平台服务配额满足项目需求',
-        '安全等级要求以当前确认的为准，如需提升需另行评估',
-      ],
-      risks: [
-        { risk: '云平台配额不足', impact: '高', mitigation: '提前与云厂商确认配额并申请提升' },
-        { risk: '网络连接延迟', impact: '中', mitigation: '提前测试专线/VPN连通性，预留缓冲时间' },
-        { risk: '安全合规要求变更', impact: '中', mitigation: '项目启动时冻结安全需求基线，变更走变更流程' },
-        { risk: '客户人员配合不足', impact: '高', mitigation: '明确RACI矩阵，定期同步进度' },
-      ],
-      timeline: `预计项目总周期为${projectType === 'landing_zone' ? '8-12' : '12-16'}周，分为设计、实施、验证三个主要阶段。`,
-      milestones: [
-        { phase: 'M1-设计阶段', duration: '2-3周', deliverable: '架构设计文档、实施方案' },
-        { phase: 'M2-实施阶段', duration: `${projectType === 'landing_zone' ? '4-6' : '6-8'}周`, deliverable: 'Landing Zone部署、安全配置' },
-        { phase: 'M3-验证阶段', duration: '1-2周', deliverable: '测试报告、验收报告' },
-        { phase: 'M4-交付阶段', duration: '1周', deliverable: '运维手册、培训材料' },
-      ],
-      team: [
-        { role: '项目总监', count: 1, responsibility: '项目整体管控、客户高层沟通' },
-        { role: '云架构师', count: 1, responsibility: '架构设计、技术方案审核' },
-        { role: '云工程师', count: 2, responsibility: 'Landing Zone实施部署、配置' },
-        { role: '安全顾问', count: 1, responsibility: '安全架构设计、合规审计' },
-        { role: '项目经理', count: 1, responsibility: '项目进度管理、风险跟踪' },
-      ],
-      acceptance_criteria: [
-        '所有云账号Landing Zone配置完成并通过验证',
-        '网络连通性测试通过，延迟满足SLA要求',
-        '安全合规检查通过，满足等保要求',
-        '监控告警体系正常运行',
-        '运维文档交付并通过审核',
-        '客户团队完成培训并通过考核',
-      ],
-    }
     workflowStep.value = 4
-    ElMessage.success('SOW 生成完成')
+    // 持久化到 IndexedDB
+    setJSON(`aicc_sow_${opportunityId}`, sowContent.value)
+
+    const sourceMsg = quotation?.estimate
+      ? `（基于报价${quotation.estimate.totalHours}人天）`
+      : '（使用默认估算）'
+    ElMessage.success(`${typeName}项目 SOW 生成完成${sourceMsg}`)
   } finally {
     generating.value = false
   }
 }
 
-function exportSOW(format) {
-  ElMessage.success(`${format.toUpperCase()} 导出功能开发中...`)
+async function exportSOW(format) {
+  if (!sowContent.value) {
+    ElMessage.warning('请先生成 SOW')
+    return
+  }
+  const s = sowContent.value
+  const doc = {
+    title: s.title,
+    subtitle: `客户: ${opportunityName.value} | 生成时间: ${currentTime.value}`,
+    sections: [
+      { heading: '1. 项目概述', paragraphs: [s.project_overview] },
+      {
+        heading: '2. 项目范围',
+        paragraphs: [s.scope],
+        table: {
+          headers: ['类别', '工作项', '是否包含'],
+          rows: s.scope_items.map(i => [i.category, i.item, i.included ? '包含' : '不包含']),
+        },
+      },
+      {
+        heading: '3. 交付物',
+        table: {
+          headers: ['交付物名称', '描述', '里程碑'],
+          rows: s.deliverables.map(d => [d.name, d.description, d.milestone]),
+        },
+      },
+      { heading: '4. 前提假设', list: s.assumptions },
+      {
+        heading: '5. 风险与缓解',
+        table: {
+          headers: ['风险', '影响', '缓解措施'],
+          rows: s.risks.map(r => [r.risk, r.impact, r.mitigation]),
+        },
+      },
+      {
+        heading: '6. 项目时间线',
+        paragraphs: [s.timeline],
+        table: {
+          headers: ['阶段', '周期', '交付物'],
+          rows: s.milestones.map(m => [m.phase, m.duration, m.deliverable]),
+        },
+      },
+      {
+        heading: '7. 团队配置',
+        table: {
+          headers: ['角色', '人数', '职责'],
+          rows: s.team.map(t => [t.role, String(t.count), t.responsibility]),
+        },
+      },
+      { heading: '8. 验收标准', list: s.acceptance_criteria },
+    ],
+  }
+  try {
+    ElMessage.info(`正在导出 ${format.toUpperCase()}...`)
+    await exportDocument(format, doc, `SOW_${opportunityName.value}_${dayjs().format('YYYYMMDD')}`)
+    ElMessage.success(`SOW 已导出为 ${format.toUpperCase()}`)
+  } catch (e) {
+    ElMessage.error(`导出失败: ${e.message}`)
+  }
 }
 </script>
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 
 from sqlalchemy import select, func
@@ -22,7 +24,7 @@ class UserRepository:
         result = await self.db.execute(select(User).where(User.email == email))
         return result.scalar_one_or_none()
 
-    async def get_all(self, skip: int = 0, limit: int = 100) -> list[User]:
+    async def get_all(self, skip: int = 0, limit: int = 100) -> List[User]:
         result = await self.db.execute(select(User).offset(skip).limit(limit))
         return list(result.scalars().all())
 

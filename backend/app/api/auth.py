@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.user import LoginRequest, Token, UserCreate, UserResponse, UserUpdate
 from app.services.auth_service import AuthService
+from app.api.deps import get_current_user_id
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -37,19 +38,6 @@ class BrandingConfig(BaseModel):
     login_subtitle: str = "智能报价 · SOW · WBS · 多云对比"
 
 
-async def get_current_user_id(token: str = None) -> str:
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    try:
-        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-        return user_id
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-
-
 @router.post("/login", response_model=Token)
 async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
     service = AuthService(db)
@@ -73,11 +61,10 @@ async def register(request: UserCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(db: AsyncSession = Depends(get_db), authorization: str = None):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    token = authorization.split(" ")[1]
-    user_id = await get_current_user_id(token)
+async def get_me(
+    db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+):
     service = AuthService(db)
     user = await service.get_current_user(user_id)
     if not user:

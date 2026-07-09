@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi } from '@/api'
+import { getItem, setItem, removeItem, getJSON, setJSON } from '@/utils/db'
 
-const DEV_MODE = true
+const DEV_MODE = false  // 后端已真实运行，关闭 mock 登录，使用真实 JWT token
 
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref(localStorage.getItem('token') || '')
-  const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
+  const token = ref(getItem('token') || '')
+  const user = ref(getJSON('user', null))
 
   const isAuthenticated = computed(() => !!token.value)
   const isAdmin = computed(() => user.value?.role === 'admin')
@@ -22,13 +23,13 @@ export const useAuthStore = defineStore('auth', () => {
         role: username === 'admin' ? 'admin' : 'consultant',
         is_active: true,
       }
-      localStorage.setItem('token', token.value)
-      localStorage.setItem('user', JSON.stringify(user.value))
+      setItem('token', token.value)
+      setJSON('user', user.value)
       return
     }
     const res = await authApi.login({ username, password })
     token.value = res.access_token
-    localStorage.setItem('token', res.access_token)
+    setItem('token', res.access_token)
     await fetchUser()
   }
 
@@ -38,6 +39,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
     try {
       user.value = await authApi.getMe()
+      setJSON('user', user.value)
     } catch {
       logout()
     }
@@ -45,14 +47,14 @@ export const useAuthStore = defineStore('auth', () => {
 
   function setToken(newToken) {
     token.value = newToken
-    localStorage.setItem('token', newToken)
+    setItem('token', newToken)
   }
 
   function logout() {
     token.value = ''
     user.value = null
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
+    removeItem('token')
+    removeItem('user')
   }
 
   return { token, user, isAuthenticated, isAdmin, login, fetchUser, logout, setToken }

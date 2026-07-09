@@ -1,0 +1,109 @@
+stages:
+  - build
+  - push
+  - deploy
+
+variables:
+  REGISTRY: registry.cn-hangzhou.aliyuncs.com
+  NAMESPACE: your-namespace
+  BACKEND_IMAGE: $REGISTRY/$NAMESPACE/aicc-backend
+  FRONTEND_IMAGE: $REGISTRY/$NAMESPACE/aicc-frontend
+
+.backend-build:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  script:
+    - docker build -t $BACKEND_IMAGE:$CI_COMMIT_SHORT_SHA -t $BACKEND_IMAGE:latest ./backend
+    - docker save $BACKEND_IMAGE:$CI_COMMIT_SHORT_SHA -o backend-image.tar
+  artifacts:
+    paths:
+      - backend-image.tar
+    expire_in: 1 day
+
+.frontend-build:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  script:
+    - docker build --build-arg VITE_API_BASE_URL=/api/v1 -t $FRONTEND_IMAGE:$CI_COMMIT_SHORT_SHA -t $FRONTEND_IMAGE:latest ./frontend
+    - docker save $FRONTEND_IMAGE:$CI_COMMIT_SHORT_SHA -o frontend-image.tar
+  artifacts:
+    paths:
+      - frontend-image.tar
+    expire_in: 1 day
+
+.push-to-acr:
+  stage: push
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - docker login -u $ACR_USERNAME -p $ACR_PASSWORD $REGISTRY
+  script:
+    - docker load -i backend-image.tar
+    - docker load -i frontend-image.tar
+    - docker push $BACKEND_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $BACKEND_IMAGE:latest
+    - docker push $FRONTEND_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $FRONTEND_IMAGE:latest
+
+.deploy-dev:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  script:
+    - kubectl config use-context $DEV_KUBE_CONTEXT
+    - |
+      for f in deploy/k8s/0*.yaml; do
+        content=$(cat "$f" | \
+          sed "s|namespace: aicc|namespace: aicc-dev|g" | \
+          sed "s|YOUR_REGISTRY/aicc-backend:latest|$BACKEND_IMAGE:$CI_COMMIT_SHORT_SHA|g" | \
+          sed "s|YOUR_REGISTRY/aicc-frontend:latest|$FRONTEND_IMAGE:$CI_COMMIT_SHORT_SHA|g")
+        echo "$content" | kubectl apply -f -
+      done
+    - kubectl rollout status deployment/aicc-backend -n aicc-dev --timeout=180s
+    - kubectl rollout status deployment/aicc-frontend -n aicc-dev --timeout=120s
+  environment:
+    name: dev
+    url: http://$DEV_NODE_IP:30080
+
+.deploy-prod:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  script:
+    - kubectl config use-context $PROD_KUBE_CONTEXT
+    - |
+      for f in deploy/k8s/0*.yaml; do
+        content=$(cat "$f" | \
+          sed "s|namespace: aicc|namespace: aicc-prod|g" | \
+          sed "s|YOUR_REGISTRY/aicc-backend:latest|$BACKEND_IMAGE:$CI_COMMIT_SHORT_SHA|g" | \
+          sed "s|YOUR_REGISTRY/aicc-frontend:latest|$FRONTEND_IMAGE:$CI_COMMIT_SHORT_SHA|g" | \
+          sed "s|aicc\.yourdomain\.com|$PROD_DOMAIN|g")
+        echo "$content" | kubectl apply -f -
+      done
+    - kubectl rollout status deployment/aicc-backend -n aicc-prod --timeout=300s
+    - kubectl rollout status deployment/aicc-frontend -n aicc-prod --timeout=120s
+  environment:
+    name: prod
+    url: https://$PROD_DOMAIN
+  when: manual
+
+dev-pipeline:
+  extends:
+    - .backend-build
+    - .frontend-build
+    - .push-to-acr
+    - .deploy-dev
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+prod-pipeline:
+  extends:
+    - .backend-build
+    - .frontend-build
+    - .push-to-acr
+    - .deploy-prod
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"

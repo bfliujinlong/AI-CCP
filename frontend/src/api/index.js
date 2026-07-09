@@ -45,10 +45,21 @@ export const skillApi = {
   update: (id, data) => http.put(`/skills/${id}`, data),
   delete: (id) => http.delete(`/skills/${id}`),
   execute: (data) => withMock(() => mockApi.skills.execute(data), () => http.post('/skills/execute', data))(),
+  // Skill 学习系统
+  saveExecution: (data) => withMock(() => mockApi.skills.saveExecution(data), () => http.post('/skills/executions', data))(),
+  getHistory: (params) => withMock(() => mockApi.skills.getHistory(params), () => http.get('/skills/executions', { params }))(),
+  submitFeedback: (executionId, feedback) => withMock(() => mockApi.skills.submitFeedback(executionId, feedback), () => http.post(`/skills/executions/${executionId}/feedback`, feedback))(),
+  getLearningStats: () => withMock(() => mockApi.skills.getLearningStats(), () => http.get('/skills/learning-stats'))(),
+  getLearnedQuotationParams: (projectType) => withMock(() => mockApi.skills.getLearnedQuotationParams(projectType), () => http.get('/skills/learned-params', { params: { project_type: projectType } }))(),
 }
 
 export const dashboardApi = {
   stats: () => withMock(() => mockApi.dashboard.stats(), () => http.get('/dashboard/stats'))(),
+}
+
+export const llmApi = {
+  test: (data) => http.post('/llm/test', data),
+  chat: (data) => http.post('/llm/chat', data),
 }
 
 export const cloudPricingApi = {

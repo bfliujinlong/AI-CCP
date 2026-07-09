@@ -1,3 +1,5 @@
+from __future__ import annotations
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +20,7 @@ class SkillService:
     async def get_by_id(self, skill_id: UUID) -> Skill | None:
         return await self.repo.get_by_id(skill_id)
 
-    async def get_all(self, category: str | None = None) -> list[Skill]:
+    async def get_all(self, category: str | None = None) -> List[Skill]:
         return await self.repo.get_all(category)
 
     async def create(self, data: SkillCreate) -> Skill:

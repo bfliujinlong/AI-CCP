@@ -1,3 +1,5 @@
+from __future__ import annotations
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 
 from sqlalchemy import select, func
@@ -14,7 +16,7 @@ class OpportunityRepository:
         result = await self.db.execute(select(Opportunity).where(Opportunity.id == opportunity_id))
         return result.scalar_one_or_none()
 
-    async def get_by_customer(self, customer_id: UUID, skip: int = 0, limit: int = 20) -> list[Opportunity]:
+    async def get_by_customer(self, customer_id: UUID, skip: int = 0, limit: int = 20) -> List[Opportunity]:
         result = await self.db.execute(
             select(Opportunity)
             .where(Opportunity.customer_id == customer_id)
@@ -31,7 +33,7 @@ class OpportunityRepository:
         search: str | None = None,
         status: str | None = None,
         customer_id: UUID | None = None,
-    ) -> list[Opportunity]:
+    ) -> List[Opportunity]:
         query = select(Opportunity)
         if search:
             query = query.where(Opportunity.name.ilike(f"%{search}%"))

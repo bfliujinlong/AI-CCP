@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List, Dict
 
 from app.core.database import get_db
 from app.core.security import get_password_hash, verify_password
@@ -99,7 +99,7 @@ async def verify_phone_code(req: PhoneVerifyCheckRequest):
     return {"verified": True, "phone": req.phone}
 
 
-@router.get("/", response_model=list[AccountListResponse])
+@router.get("/", response_model=List[AccountListResponse])
 async def list_accounts(
     skip: int = 0,
     limit: int = 50,

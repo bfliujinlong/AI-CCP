@@ -1,6 +1,162 @@
+import { getItem, setItem, getJSON, setJSON } from '../utils/db'
+
 const DEV_MODE = import.meta.env.DEV
 
-const mockCustomers = [
+function loadFromStorage(key, defaultValue) {
+  return getJSON(`aicc_mock_${key}`, defaultValue)
+}
+
+function saveToStorage(key, value) {
+  setJSON(`aicc_mock_${key}`, value)
+}
+
+// ==================== LLM 对接 ====================
+// 从 localStorage 读取 LLM 配置，若已配置则调用真实 LLM API
+
+function loadLLMConfig() {
+  try {
+    const cfg = getJSON('aicc_llm_config', {})
+    // 新版：按 provider 隔离存储
+    if (cfg.providers && cfg.provider) {
+      return {
+        provider: cfg.provider,
+        ...cfg.providers[cfg.provider],
+      }
+    }
+    // 旧版兼容：直接存储了单 provider 配置
+    return cfg
+  } catch { return {} }
+}
+
+function isLLMEnabled() {
+  const cfg = loadLLMConfig()
+  return cfg.provider && cfg.provider !== 'mock' && cfg.api_key
+}
+
+async function callLLM(messages, options = {}) {
+  const cfg = loadLLMConfig()
+  const token = getItem('token')
+  const res = await fetch('/api/v1/llm/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      provider: cfg.provider,
+      api_key: cfg.api_key,
+      model: cfg.model || 'qwen-plus',
+      base_url: cfg.base_url || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      messages,
+      temperature: options.temperature ?? cfg.temperature ?? 0.7,
+      max_tokens: options.max_tokens ?? cfg.max_tokens ?? 2048,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`LLM 代理请求失败 (${res.status}): ${err}`)
+  }
+  const data = await res.json()
+  return data.content || ''
+}
+
+async function callLLMStructured(prompt, systemPrompt, outputHint) {
+  const messages = []
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
+  messages.push({ role: 'user', content: `${prompt}\n\n请返回严格的 JSON 格式${outputHint ? `，包含：${outputHint}` : ''}。不要返回 markdown 代码块。` })
+  const raw = await callLLM(messages)
+  try {
+    return JSON.parse(raw)
+  } catch {
+    const start = raw.indexOf('{')
+    const end = raw.lastIndexOf('}') + 1
+    if (start >= 0 && end > start) {
+      try { return JSON.parse(raw.slice(start, end)) } catch {}
+    }
+    return { raw_response: raw }
+  }
+}
+
+// ==================== Skill 学习系统 ====================
+// 让报价 Skill "越用越好用"：保存执行历史 → 用户反馈 → 自动调优参数
+
+function loadSkillHistory() {
+  try {
+    return JSON.parse(localStorage.getItem('aicc_skill_history') || '[]')
+  } catch { return [] }
+}
+
+function saveSkillHistory(history) {
+  localStorage.setItem('aicc_skill_history', JSON.stringify(history.slice(-200))) // 最多保留200条
+}
+
+function loadLearningParams() {
+  try {
+    const saved = localStorage.getItem('aicc_learning_params')
+    if (saved) return JSON.parse(saved)
+  } catch {}
+  // 默认学习参数 - 各维度的调整系数（1.0 = 不调整）
+  return {
+    version: 1,
+    daily_rate_factor: 1.0,        // 人天单价调整系数
+    day_factors: {                   // 各工作项人天调整系数
+      '架构设计': 1.0, '环境搭建': 1.0, '安全合规': 1.0,
+      '网络配置': 1.0, 'IAM 配置': 1.0, '监控运维': 1.0,
+      '培训交付': 1.0, '迁移评估': 1.0, '迁移方案设计': 1.0,
+      '迁移实施': 1.0, '割接与验证': 1.0, '测试与优化': 1.0,
+      '需求分析与评估': 1.0, '方案设计': 1.0, '实施与部署': 1.0,
+      '测试与验证': 1.0, '项目管理': 1.0,
+    },
+    project_type_factors: {          // 按项目类型的整体调整系数
+      landing_zone: 1.0, migration: 1.0, big_data: 1.0,
+      hybrid_cloud: 1.0, security: 1.0, cost_optimization: 1.0,
+    },
+    feedback_count: 0,
+    accuracy_trend: [],              // 准确率趋势 [{date, accuracy}]
+    last_updated: null,
+  }
+}
+
+function saveLearningParams(params) {
+  params.last_updated = new Date().toISOString()
+  localStorage.setItem('aicc_learning_params', JSON.stringify(params))
+}
+
+// 根据反馈调整学习参数
+function applyFeedback(estimatedDays, actualDays, projectType, breakdownItems) {
+  const params = loadLearningParams()
+  const ratio = actualDays / estimatedDays // >1 = 低估, <1 = 高估
+
+  // 按项目类型调整整体系数（指数移动平均，学习率0.15）
+  const lr = 0.15
+  if (projectType && params.project_type_factors[projectType] !== undefined) {
+    const current = params.project_type_factors[projectType]
+    params.project_type_factors[projectType] = current * (1 - lr) + ratio * lr
+  }
+
+  // 按工作项调整细粒度系数
+  if (breakdownItems && breakdownItems.length > 0) {
+    breakdownItems.forEach(item => {
+      const name = item.item
+      if (params.day_factors[name] !== undefined && item.days > 0) {
+        const current = params.day_factors[name]
+        // 用整体ratio调整每个工作项（假设偏差均匀分布）
+        params.day_factors[name] = Math.max(0.3, Math.min(3.0, current * (1 - lr) + ratio * lr))
+      }
+    })
+  }
+
+  // 记录准确率趋势
+  const accuracy = Math.max(0, 1 - Math.abs(ratio - 1))
+  params.accuracy_trend.push({ date: new Date().toISOString(), accuracy: Math.round(accuracy * 100) / 100 })
+  if (params.accuracy_trend.length > 50) params.accuracy_trend = params.accuracy_trend.slice(-50)
+
+  params.feedback_count = (params.feedback_count || 0) + 1
+  saveLearningParams(params)
+  return { params, accuracy }
+}
+
+const defaultCustomers = [
   { id: 'c001', name: '中国银行', industry: '金融', contact_name: '张经理', contact_email: 'zhang@boc.com', contact_phone: '13800138001', address: '北京市西城区', description: '国有大型商业银行', owner_id: 'u001', is_active: true, created_at: '2024-01-15T10:00:00Z', updated_at: '2024-03-20T14:30:00Z' },
   { id: 'c002', name: '宝钢集团', industry: '制造', contact_name: '李总', contact_email: 'li@baosteel.com', contact_phone: '13900139002', address: '上海市宝山区', description: '大型钢铁制造企业', owner_id: 'u001', is_active: true, created_at: '2024-02-10T09:00:00Z', updated_at: '2024-04-15T16:00:00Z' },
   { id: 'c003', name: '永辉超市', industry: '零售', contact_name: '王总监', contact_email: 'wang@yonghui.com', contact_phone: '13700137003', address: '福州市台江区', description: '连锁零售企业', owner_id: 'u001', is_active: true, created_at: '2024-03-05T11:00:00Z', updated_at: '2024-05-10T09:30:00Z' },
@@ -9,7 +165,7 @@ const mockCustomers = [
   { id: 'c006', name: '浙江大学', industry: '教育', contact_name: '刘教授', contact_email: 'liu@zju.edu.cn', contact_phone: '13400134006', address: '杭州市西湖区', description: '高校科研云平台', owner_id: 'u001', is_active: false, created_at: '2024-01-20T10:00:00Z', updated_at: '2024-02-28T15:00:00Z' },
 ]
 
-const mockOpportunities = [
+const defaultOpportunities = [
   { id: 'o001', name: '中国银行 Landing Zone 项目', customer_id: 'c001', customer_name: '中国银行', type: 'landing_zone', status: 'proposal', estimated_revenue: 2800000, probability: 70, description: '为国有银行构建多云 Landing Zone 架构', owner_id: 'u001', created_at: '2024-02-01T10:00:00Z', updated_at: '2024-05-15T14:00:00Z' },
   { id: 'o002', name: '宝钢集团云迁移项目', customer_id: 'c002', customer_name: '宝钢集团', type: 'migration', status: 'negotiation', estimated_revenue: 3500000, probability: 60, description: '核心业务系统从本地机房迁移至华为云', owner_id: 'u001', created_at: '2024-03-10T09:00:00Z', updated_at: '2024-06-01T16:00:00Z' },
   { id: 'o003', name: '永辉超市大数据平台', customer_id: 'c003', customer_name: '永辉超市', type: 'big_data', status: 'discovery', estimated_revenue: 1500000, probability: 40, description: '构建零售大数据分析平台', owner_id: 'u001', created_at: '2024-04-15T11:00:00Z', updated_at: '2024-05-20T09:30:00Z' },
@@ -19,14 +175,32 @@ const mockOpportunities = [
   { id: 'o007', name: '浙江大学云迁移评估', customer_id: 'c006', customer_name: '浙江大学', type: 'migration', status: 'closed_lost', estimated_revenue: 600000, probability: 0, description: '科研系统云迁移评估', owner_id: 'u001', created_at: '2024-01-25T10:00:00Z', updated_at: '2024-02-28T15:00:00Z' },
 ]
 
-const mockFactSheets = [
+const defaultFactSheets = [
   { id: 'fs001', opportunity_id: 'o001', category: 'general', version: 2, created_by: 'u001', created_at: '2024-05-10T10:00:00Z', updated_at: '2024-05-15T14:00:00Z', facts: { project_type: 'landing_zone', current_cloud: 'on_premise', target_cloud: 'aliyun', vm_count: 500, database_count: 30, region_count: 3, account_count: 15, vpc_count: 12, security_level: 'advanced' } },
-  { id: 'fs002', opportunity_id: 'o002', category: 'general', version: 1, created_by: 'u001', created_at: '2024-04-10T09:00:00Z', updated_at: '2024-04-10T09:00:00Z', facts: { project_type: 'migration', current_cloud: 'on_premise', target_cloud: 'huawei', vm_count: 800, database_count: 45, region_count: 2, account_count: 8, vpc_count: 6, security_level: 'advanced' } },
+  { id: 'fs002', opportunity_id: 'o002', category: 'general', version: 1, created_by: 'u001', created_at: '2024-04-10T09:00:00Z', updated_at: '2024-04-10T09:00:00Z', facts: { project_type: 'migration', current_cloud: 'on_premise', target_cloud: 'huawei', vm_count: 800, database_count: 45, region_count: 2, account_count: 8, vpc_count: 6, security_level: 'advanced', architecture_type: 'microservice', app_count: 12, microservice_count: 85, k8s_cluster_count: 3, container_count: 320, api_count: 150, storage_tb: 50, bandwidth_mbps: 1000 } },
   { id: 'fs003', opportunity_id: 'o003', category: 'general', version: 1, created_by: 'u001', created_at: '2024-04-20T11:00:00Z', updated_at: '2024-04-20T11:00:00Z', facts: { project_type: 'big_data', current_cloud: 'on_premise', target_cloud: 'aliyun', vm_count: 200, database_count: 10, region_count: 2, account_count: 5, vpc_count: 4, security_level: 'medium' } },
-  { id: 'fs004', opportunity_id: 'o004', category: 'general', version: 1, created_by: 'u001', created_at: '2024-05-05T08:30:00Z', updated_at: '2024-05-05T08:30:00Z', facts: { project_type: 'hybrid_cloud', current_cloud: 'aws', target_cloud: 'aliyun', vm_count: 1200, database_count: 60, region_count: 4, account_count: 20, vpc_count: 18, security_level: 'advanced' } },
+  { id: 'fs004', opportunity_id: 'o004', category: 'general', version: 1, created_by: 'u001', created_at: '2024-05-05T08:30:00Z', updated_at: '2024-05-05T08:30:00Z', facts: { project_type: 'hybrid_cloud', current_cloud: 'aws', target_cloud: 'aliyun', vm_count: 1200, database_count: 60, region_count: 4, account_count: 20, vpc_count: 18, security_level: 'advanced', architecture_type: 'hybrid', app_count: 25, microservice_count: 120, k8s_cluster_count: 5, container_count: 500, api_count: 300, storage_tb: 200, bandwidth_mbps: 5000 } },
   { id: 'fs005', opportunity_id: 'o005', category: 'general', version: 1, created_by: 'u001', created_at: '2024-04-25T14:00:00Z', updated_at: '2024-04-25T14:00:00Z', facts: { project_type: 'security', current_cloud: 'aliyun', target_cloud: 'huawei', vm_count: 300, database_count: 15, region_count: 2, account_count: 10, vpc_count: 8, security_level: 'advanced' } },
   { id: 'fs006', opportunity_id: 'o006', category: 'general', version: 1, created_by: 'u001', created_at: '2024-01-25T10:00:00Z', updated_at: '2024-01-25T10:00:00Z', facts: { project_type: 'migration', current_cloud: 'on_premise', target_cloud: 'tencent', vm_count: 150, database_count: 8, region_count: 1, account_count: 3, vpc_count: 2, security_level: 'medium' } },
 ]
+
+// 懒加载：第一次访问时才从存储读取（此时 initStorage 已完成）
+let _customers = null
+let _opportunities = null
+let _factSheets = null
+
+function getMockCustomers() {
+  if (!_customers) _customers = loadFromStorage('customers', defaultCustomers)
+  return _customers
+}
+function getMockOpportunities() {
+  if (!_opportunities) _opportunities = loadFromStorage('opportunities', defaultOpportunities)
+  return _opportunities
+}
+function getMockFactSheets() {
+  if (!_factSheets) _factSheets = loadFromStorage('factSheets', defaultFactSheets)
+  return _factSheets
+}
 
 const mockSkills = [
   { id: 'sk001', name: 'LZ-Discovery', category: 'landing_zone', version: '1.0', description: 'Landing Zone 发现问题生成器 - 自动生成项目发现阶段的关键问题清单', prompt_template: 'Based on the following project context, generate discovery questions...\n\nProject Type: {project_type}\nCurrent Cloud: {current_cloud}\nTarget Cloud: {target_cloud}\nAccount Count: {account_count}\nRegion Count: {region_count}\nSecurity Level: {security_level}', input_schema: { project_type: 'string', current_cloud: 'string', target_cloud: 'string', account_count: 'integer', region_count: 'integer', security_level: 'string' }, output_schema: { questions: [{ category: 'string', question: 'string', purpose: 'string' }] }, status: 'active', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-06-01T00:00:00Z' },
@@ -69,6 +243,14 @@ const mockFactRegistry = [
   { id: 'fr010', fact_name: 'target_cloud', fact_type: 'enum', description: '目标云平台', validation_rule: { options: ['aws', 'azure', 'aliyun', 'huawei', 'tencent'] }, required: true, category: 'general' },
   { id: 'fr011', fact_name: 'budget_range', fact_type: 'string', description: '预算范围', validation_rule: {}, required: false, category: 'general' },
   { id: 'fr012', fact_name: 'timeline_months', fact_type: 'integer', description: '项目周期（月）', validation_rule: { min: 1 }, required: false, category: 'general' },
+  { id: 'fr013', fact_name: 'architecture_type', fact_type: 'enum', description: '架构类型', validation_rule: { options: ['monolith', 'microservice', 'hybrid', 'serverless'] }, required: false, category: 'infrastructure' },
+  { id: 'fr014', fact_name: 'app_count', fact_type: 'integer', description: '业务应用数量', validation_rule: { min: 0 }, required: false, category: 'infrastructure' },
+  { id: 'fr015', fact_name: 'microservice_count', fact_type: 'integer', description: '微服务数量', validation_rule: { min: 0 }, required: false, category: 'infrastructure' },
+  { id: 'fr016', fact_name: 'k8s_cluster_count', fact_type: 'integer', description: 'Kubernetes 集群数量', validation_rule: { min: 0 }, required: false, category: 'infrastructure' },
+  { id: 'fr017', fact_name: 'container_count', fact_type: 'integer', description: '容器实例数量', validation_rule: { min: 0 }, required: false, category: 'infrastructure' },
+  { id: 'fr018', fact_name: 'api_count', fact_type: 'integer', description: 'API 接口数量', validation_rule: { min: 0 }, required: false, category: 'infrastructure' },
+  { id: 'fr019', fact_name: 'storage_tb', fact_type: 'integer', description: '存储容量(TB)', validation_rule: { min: 0 }, required: false, category: 'infrastructure' },
+  { id: 'fr020', fact_name: 'bandwidth_mbps', fact_type: 'integer', description: '带宽需求(Mbps)', validation_rule: { min: 0 }, required: false, category: 'infrastructure' },
 ]
 
 function paginate(list, page, pageSize) {
@@ -82,68 +264,74 @@ export const mockApi = {
   },
   customers: {
     list: (params) => {
-      let filtered = [...mockCustomers]
+      let filtered = [...getMockCustomers()]
       if (params?.search) filtered = filtered.filter(c => c.name.includes(params.search))
       if (params?.is_active !== undefined) filtered = filtered.filter(c => c.is_active === params.is_active)
       return Promise.resolve(paginate(filtered, params?.page || 1, params?.page_size || 20))
     },
     get: (id) => {
-      const c = mockCustomers.find(c => c.id === id)
+      const c = getMockCustomers().find(c => c.id === id)
       return c ? Promise.resolve(c) : Promise.reject(new Error('Not found'))
     },
     create: (data) => {
       const newCustomer = { ...data, id: 'c' + Date.now(), owner_id: 'u001', is_active: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
-      mockCustomers.push(newCustomer)
+      getMockCustomers().push(newCustomer)
+      saveToStorage('customers', getMockCustomers())
       return Promise.resolve(newCustomer)
     },
     update: (id, data) => {
-      const idx = mockCustomers.findIndex(c => c.id === id)
-      if (idx >= 0) { Object.assign(mockCustomers[idx], data, { updated_at: new Date().toISOString() }); return Promise.resolve(mockCustomers[idx]) }
+      const idx = getMockCustomers().findIndex(c => c.id === id)
+      if (idx >= 0) { Object.assign(getMockCustomers()[idx], data, { updated_at: new Date().toISOString() }); saveToStorage('customers', getMockCustomers()); return Promise.resolve(getMockCustomers()[idx]) }
       return Promise.reject(new Error('Not found'))
     },
     delete: (id) => {
-      const idx = mockCustomers.findIndex(c => c.id === id)
-      if (idx >= 0) { mockCustomers.splice(idx, 1); return Promise.resolve() }
+      const idx = getMockCustomers().findIndex(c => c.id === id)
+      if (idx >= 0) { getMockCustomers().splice(idx, 1); saveToStorage('customers', getMockCustomers()); return Promise.resolve() }
       return Promise.reject(new Error('Not found'))
     },
   },
   opportunities: {
     list: (params) => {
-      let filtered = [...mockOpportunities]
+      let filtered = [...getMockOpportunities()]
       if (params?.search) filtered = filtered.filter(o => o.name.includes(params.search))
       if (params?.status) filtered = filtered.filter(o => o.status === params.status)
       if (params?.customer_id) filtered = filtered.filter(o => o.customer_id === params.customer_id)
       return Promise.resolve(paginate(filtered, params?.page || 1, params?.page_size || 20))
     },
     get: (id) => {
-      const o = mockOpportunities.find(o => o.id === id)
+      const o = getMockOpportunities().find(o => o.id === id)
       return o ? Promise.resolve(o) : Promise.reject(new Error('Not found'))
     },
     create: (data) => {
-      const customer = mockCustomers.find(c => c.id === data.customer_id)
+      const customer = getMockCustomers().find(c => c.id === data.customer_id)
       const newOpp = { ...data, id: 'o' + Date.now(), customer_name: customer?.name || '', owner_id: 'u001', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
-      mockOpportunities.unshift(newOpp)
+      getMockOpportunities().unshift(newOpp)
+      saveToStorage('opportunities', getMockOpportunities())
       return Promise.resolve(newOpp)
     },
     update: (id, data) => {
-      const idx = mockOpportunities.findIndex(o => o.id === id)
-      if (idx >= 0) { Object.assign(mockOpportunities[idx], data, { updated_at: new Date().toISOString() }); return Promise.resolve(mockOpportunities[idx]) }
+      const idx = getMockOpportunities().findIndex(o => o.id === id)
+      if (idx >= 0) { Object.assign(getMockOpportunities()[idx], data, { updated_at: new Date().toISOString() }); saveToStorage('opportunities', getMockOpportunities()); return Promise.resolve(getMockOpportunities()[idx]) }
       return Promise.reject(new Error('Not found'))
     },
     delete: (id) => {
-      const idx = mockOpportunities.findIndex(o => o.id === id)
-      if (idx >= 0) { mockOpportunities.splice(idx, 1); return Promise.resolve() }
+      const idx = getMockOpportunities().findIndex(o => o.id === id)
+      if (idx >= 0) { getMockOpportunities().splice(idx, 1); saveToStorage('opportunities', getMockOpportunities()); return Promise.resolve() }
       return Promise.reject(new Error('Not found'))
     },
     stats: () => Promise.resolve(mockDashboardStats),
   },
   factsheets: {
     list: (opportunityId) => {
-      return Promise.resolve(mockFactSheets.filter(fs => fs.opportunity_id === opportunityId))
+      const list = getMockFactSheets()
+        .filter(fs => fs.opportunity_id === opportunityId)
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      return Promise.resolve(list)
     },
     create: (data) => {
       const newFs = { ...data, id: 'fs' + Date.now(), version: 1, created_by: 'u001', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
-      mockFactSheets.push(newFs)
+      getMockFactSheets().push(newFs)
+      saveToStorage('factSheets', getMockFactSheets())
       return Promise.resolve(newFs)
     },
     registry: () => Promise.resolve(mockFactRegistry),
@@ -181,7 +369,7 @@ export const mockApi = {
   cloudPricing: {
     getProviders: () => Promise.resolve(mockCloudPricing.providers),
     getEcsPrices: (region) => Promise.resolve(mockCloudPricing.ecs(region)),
-    getK8sPrices: (region) => Promise.resolve({ data: [], source: 'mock', cached_at: new Date().toISOString(), ttl_hours: 4 }),
+    getK8sPrices: (region) => Promise.resolve(mockCloudPricing.k8s(region)),
     getRdsPrices: (region) => Promise.resolve(mockCloudPricing.rds(region)),
     getOssPrices: (region) => Promise.resolve(mockCloudPricing.oss(region)),
     getNetworkPrices: (region) => Promise.resolve(mockCloudPricing.network(region)),
@@ -194,10 +382,47 @@ export const mockApi = {
       const s = mockSkills.find(s => s.id === id)
       return s ? Promise.resolve(s) : Promise.reject(new Error('Not found'))
     },
-    execute: (data) => {
+    execute: async (data) => {
       const skillName = data.skill_name
       let outputs = {}
-      
+
+      // 如果配置了 LLM，调用真实 LLM 生成
+      if (isLLMEnabled()) {
+        try {
+          const skill = mockSkills.find(s => s.name === skillName)
+          const promptText = skill?.prompt_template || ''
+          // 替换模板变量
+          let filledPrompt = promptText
+          if (data.inputs) {
+            for (const [k, v] of Object.entries(data.inputs)) {
+              filledPrompt = filledPrompt.replace(new RegExp(`\\{${k}\\}`, 'g'), typeof v === 'object' ? JSON.stringify(v) : String(v))
+            }
+          }
+
+          const systemPrompt = '你是安畅云咨询平台的 AI 助手，专注于云迁移、Landing Zone、大数据平台等项目的报价、SOW 和 WBS 生成。请根据用户提供的信息，生成专业、准确的结构化输出。'
+
+          if (skillName === 'Generate-Quotation') {
+            outputs = await callLLMStructured(filledPrompt, systemPrompt, 'cost_breakdown 数组(每项含 item,description,days,rate,total) 和 total_days, total_cost')
+          } else if (skillName === 'Generate-SOW') {
+            outputs = await callLLMStructured(filledPrompt, systemPrompt, 'title, project_overview, scope, scope_items, deliverables, assumptions, risks, timeline, team, acceptance_criteria')
+          } else if (skillName === 'Generate-WBS') {
+            outputs = await callLLMStructured(filledPrompt, systemPrompt, 'phases 数组(每项含 name,duration,tasks 数组含 name,duration_days,role,dependencies,deliverable,level) 和 total_days')
+          } else if (skillName === 'Generate-FactSheet') {
+            outputs = await callLLMStructured(filledPrompt, systemPrompt, 'facts 对象 和 recommendations 数组')
+          } else {
+            // 默认调用 LLM
+            const raw = await callLLM([{ role: 'user', content: filledPrompt }])
+            outputs = { raw_response: raw }
+          }
+          return Promise.resolve({ skill_name: data.skill_name, outputs, raw_response: 'Generated by LLM', llm_used: true })
+        } catch (err) {
+          // LLM 调用失败，回退到 Mock
+          console.warn('LLM call failed, falling back to mock:', err.message)
+          ElMessage?.warning?.(`LLM 调用失败，已回退到 Mock: ${err.message}`)
+        }
+      }
+
+      // Mock 模式（原有逻辑）
       if (skillName === 'Generate-FactSheet') {
         outputs = {
           facts: { project_type: 'landing_zone', current_cloud: 'on_premise', target_cloud: 'aliyun', vm_count: 500, database_count: 30, region_count: 3, account_count: 15, vpc_count: 12, security_level: 'advanced' },
@@ -317,6 +542,100 @@ export const mockApi = {
         raw_response: 'Mock AI response',
       })
     },
+    // ===== Skill 学习系统接口 =====
+    // 保存执行历史
+    saveExecution: (data) => {
+      const history = loadSkillHistory()
+      const record = {
+        id: 'exec_' + Date.now(),
+        skill_name: data.skill_name,
+        inputs: data.inputs || {},
+        outputs: data.outputs || {},
+        estimated_days: data.estimated_days || 0,
+        estimated_cost: data.estimated_cost || 0,
+        project_type: data.project_type || 'general',
+        opportunity_id: data.opportunity_id || null,
+        opportunity_name: data.opportunity_name || '',
+        created_at: new Date().toISOString(),
+        feedback: null, // null = 未反馈, {actual_days, actual_cost, rating} = 已反馈
+      }
+      history.push(record)
+      saveSkillHistory(history)
+      return Promise.resolve(record)
+    },
+    // 获取执行历史
+    getHistory: (params) => {
+      let history = loadSkillHistory()
+      if (params?.skill_name) history = history.filter(h => h.skill_name === params.skill_name)
+      if (params?.opportunity_id) history = history.filter(h => h.opportunity_id === params.opportunity_id)
+      // 按时间倒序
+      history.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      const page = params?.page || 1
+      const pageSize = params?.page_size || 20
+      const start = (page - 1) * pageSize
+      return Promise.resolve({ items: history.slice(start, start + pageSize), total: history.length, page, page_size: pageSize })
+    },
+    // 提交反馈（核心学习入口）
+    submitFeedback: (executionId, feedback) => {
+      const history = loadSkillHistory()
+      const idx = history.findIndex(h => h.id === executionId)
+      if (idx < 0) return Promise.reject(new Error('Execution not found'))
+
+      const exec = history[idx]
+      exec.feedback = {
+        actual_days: feedback.actual_days,
+        actual_cost: feedback.actual_cost,
+        rating: feedback.rating, // 'accurate' | 'overestimate' | 'underestimate'
+        comment: feedback.comment || '',
+        created_at: new Date().toISOString(),
+      }
+
+      // 触发学习：根据估算 vs 实际调整参数
+      if (exec.estimated_days > 0 && feedback.actual_days > 0) {
+        const result = applyFeedback(exec.estimated_days, feedback.actual_days, exec.project_type, exec.outputs?.cost_breakdown)
+        exec.feedback.accuracy = result.accuracy
+        exec.feedback.adjusted_params = result.params
+      }
+
+      saveSkillHistory(history)
+      return Promise.resolve(exec)
+    },
+    // 获取学习统计
+    getLearningStats: () => {
+      const params = loadLearningParams()
+      const history = loadSkillHistory()
+      const feedbackCount = history.filter(h => h.feedback !== null).length
+      const totalCount = history.length
+
+      // 计算平均准确率
+      const feedbacks = history.filter(h => h.feedback?.accuracy !== undefined)
+      const avgAccuracy = feedbacks.length > 0
+        ? Math.round(feedbacks.reduce((s, h) => s + h.feedback.accuracy, 0) / feedbacks.length * 100)
+        : 0
+
+      return Promise.resolve({
+        total_executions: totalCount,
+        feedback_count: feedbackCount,
+        avg_accuracy: avgAccuracy,
+        learning_level: Math.min(100, Math.floor(feedbackCount / 3)), // 每3次反馈提升1级，最高100
+        params,
+        accuracy_trend: params.accuracy_trend || [],
+        project_type_factors: params.project_type_factors,
+        day_factors: params.day_factors,
+      })
+    },
+    // 获取学习后的报价参数（用于 QuotationView）
+    getLearnedQuotationParams: (projectType) => {
+      const params = loadLearningParams()
+      const typeFactor = params.project_type_factors?.[projectType] || 1.0
+      return Promise.resolve({
+        daily_rate: Math.round(3500 * (params.daily_rate_factor || 1.0)),
+        type_factor: typeFactor,
+        day_factors: params.day_factors,
+        feedback_count: params.feedback_count || 0,
+        learning_active: (params.feedback_count || 0) >= 2,
+      })
+    },
   },
 }
 
@@ -326,57 +645,211 @@ const mockAccounts = [
   { id: 'u003', username: 'lisi', email: 'lisi@aicc.com', full_name: '李四', role: 'manager', phone: null, phone_verified: false, is_active: true, created_at: '2024-03-01T00:00:00Z', updated_at: '2024-06-01T00:00:00Z' },
 ]
 
+// 默认价格配置，与 SystemSettings.vue 中 defaultCloudPricing 保持一致
+const PRICING_CONFIG_VERSION = 2 // 每次更新默认价格时递增此版本号
+
+const defaultCloudPricingConfig = {
+  version: PRICING_CONFIG_VERSION,
+  mode: 'mock',
+  refresh_interval_hours: '4',
+  clouds: [
+    { id: 'aliyun', name: '阿里云', enabled: true, unitPrices: { ecs: 338, rds: 880, storage: 12.0, network: 23.0 } },
+    { id: 'huawei', name: '华为云', enabled: true, unitPrices: { ecs: 320, rds: 850, storage: 11.9, network: 22.5 } },
+    { id: 'tencent', name: '腾讯云', enabled: true, unitPrices: { ecs: 318, rds: 820, storage: 11.8, network: 22.0 } },
+    { id: 'aws', name: 'AWS', enabled: true, unitPrices: { ecs: 910, rds: 1900, storage: 16.7, network: 65.0 } },
+    { id: 'azure', name: 'Azure', enabled: false, unitPrices: { ecs: 980, rds: 1850, storage: 13.4, network: 60.0 } },
+    { id: 'baidu', name: '百度云', enabled: false, unitPrices: { ecs: 290, rds: 760, storage: 11.5, network: 21.0 } },
+    { id: 'jd', name: '京东云', enabled: false, unitPrices: { ecs: 295, rds: 780, storage: 12.0, network: 21.5 } },
+    { id: 'ucloud', name: 'UCloud', enabled: false, unitPrices: { ecs: 310, rds: 820, storage: 12.5, network: 22.0 } },
+  ],
+}
+
+function loadCloudPricingConfig() {
+  try {
+    const saved = localStorage.getItem('aicc_cloud_pricing')
+    if (!saved) {
+      // 首次使用，写入默认配置
+      localStorage.setItem('aicc_cloud_pricing', JSON.stringify(defaultCloudPricingConfig))
+      return defaultCloudPricingConfig
+    }
+    const parsed = JSON.parse(saved)
+    // 版本号低于当前版本时强制覆盖为新默认配置（仅升级默认值，不丢弃用户数据）
+    if (!parsed.version || parsed.version < PRICING_CONFIG_VERSION) {
+      const merged = { ...defaultCloudPricingConfig, ...parsed, version: PRICING_CONFIG_VERSION }
+      // 保留用户已设置的 clouds 单价
+      if (parsed.clouds) {
+        merged.clouds = defaultCloudPricingConfig.clouds.map(dc => {
+          const found = parsed.clouds.find(c => c.id === dc.id)
+          return found ? { ...dc, ...found, unitPrices: { ...dc.unitPrices, ...(found.unitPrices || {}) } } : dc
+        })
+      }
+      localStorage.setItem('aicc_cloud_pricing', JSON.stringify(merged))
+      return merged
+    }
+    // 版本匹配，直接使用用户保存的配置
+    const clouds = defaultCloudPricingConfig.clouds.map(dc => {
+      const found = (parsed.clouds || []).find(c => c.id === dc.id)
+      return found ? { ...dc, ...found, unitPrices: { ...dc.unitPrices, ...(found.unitPrices || {}) } } : dc
+    })
+    return { ...defaultCloudPricingConfig, ...parsed, clouds }
+  } catch {
+    return defaultCloudPricingConfig
+  }
+}
+
+function getEnabledClouds() {
+  return loadCloudPricingConfig().clouds.filter(c => c.enabled)
+}
+
+function buildPrices(unitPriceMap, multiplier) {
+  const prices = {}
+  // 为所有已配置单价的云厂商生成价格，方便前端随时勾选对比
+  defaultCloudPricingConfig.clouds.forEach(c => {
+    prices[c.id] = { monthly: Math.round(unitPriceMap[c.id] * multiplier * 100) / 100 }
+  })
+  return prices
+}
+
 const mockCloudPricing = {
   providers: [
     { id: 'aliyun', name: '阿里云', tier: 'tier1', domestic: true },
     { id: 'huawei', name: '华为云', tier: 'tier1', domestic: true },
     { id: 'tencent', name: '腾讯云', tier: 'tier1', domestic: true },
     { id: 'aws', name: 'AWS', tier: 'tier1', domestic: false },
+    { id: 'azure', name: 'Azure', tier: 'tier1', domestic: false },
+    { id: 'baidu', name: '百度云', tier: 'tier2', domestic: true },
+    { id: 'jd', name: '京东云', tier: 'tier2', domestic: true },
+    { id: 'ucloud', name: 'UCloud', tier: 'tier3', domestic: true },
   ],
-  ecs: (region) => ({
-    data: [
-      { spec: '2C4G 通用型', prices: { aliyun: { monthly: 168 }, huawei: { monthly: 165 }, tencent: { monthly: 159 }, aws: { monthly: 198 } } },
-      { spec: '4C8G 通用型', prices: { aliyun: { monthly: 336 }, huawei: { monthly: 330 }, tencent: { monthly: 318 }, aws: { monthly: 396 } } },
-      { spec: '8C16G 通用型', prices: { aliyun: { monthly: 672 }, huawei: { monthly: 660 }, tencent: { monthly: 636 }, aws: { monthly: 792 } } },
-    ],
-    source: 'mock',
-    cached_at: new Date().toISOString(),
-    ttl_hours: 4,
-  }),
-  rds: (region) => ({
-    data: [
-      { spec: 'MySQL 2C4G', prices: { aliyun: { monthly: 420 }, huawei: { monthly: 410 }, tencent: { monthly: 398 }, aws: { monthly: 520 } } },
-      { spec: 'MySQL 4C8G', prices: { aliyun: { monthly: 840 }, huawei: { monthly: 820 }, tencent: { monthly: 796 }, aws: { monthly: 1040 } } },
-    ],
-    source: 'mock',
-    cached_at: new Date().toISOString(),
-    ttl_hours: 4,
-  }),
-  oss: (region) => ({
-    data: [
-      { spec: '标准存储 100GB', prices: { aliyun: { monthly: 12 }, huawei: { monthly: 11.9 }, tencent: { monthly: 11.8 }, aws: { monthly: 15 } } },
-    ],
-    source: 'mock',
-    cached_at: new Date().toISOString(),
-    ttl_hours: 4,
-  }),
-  network: (region) => ({
-    data: [
-      { spec: '公网带宽 10Mbps', prices: { aliyun: { monthly: 230 }, huawei: { monthly: 225 }, tencent: { monthly: 220 }, aws: { monthly: 280 } } },
-    ],
-    source: 'mock',
-    cached_at: new Date().toISOString(),
-    ttl_hours: 4,
-  }),
-  calculate: (data) => [
-    { cloud: '阿里云', monthly: 16800, annual: 201600, cheapest: true },
-    { cloud: '华为云', monthly: 16500, annual: 198000, cheapest: false },
-    { cloud: '腾讯云', monthly: 15900, annual: 190800, cheapest: false },
-    { cloud: 'AWS', monthly: 19800, annual: 237600, cheapest: false },
-  ],
-  status: () => ({ status: 'ok', message: 'Mock pricing service is active' }),
+  ecs: (region) => {
+    const cfg = loadCloudPricingConfig()
+    const ecsPrices = {}
+    cfg.clouds.forEach(c => { if (c.enabled) ecsPrices[c.id] = c.unitPrices.ecs })
+    return {
+      data: [
+        { spec: '2C4G 通用型', prices: buildPrices(ecsPrices, 0.5) },
+        { spec: '4C8G 通用型', prices: buildPrices(ecsPrices, 1) },
+        { spec: '8C16G 通用型', prices: buildPrices(ecsPrices, 2) },
+      ],
+      source: cfg.mode === 'api' ? 'api' : 'mock',
+      cached_at: new Date().toISOString(),
+      ttl_hours: Number(cfg.refresh_interval_hours) || 4,
+    }
+  },
+  k8s: (region) => {
+    const cfg = loadCloudPricingConfig()
+    const ecsPrices = {}
+    cfg.clouds.forEach(c => { if (c.enabled) ecsPrices[c.id] = c.unitPrices.ecs })
+    return {
+      data: [
+        { spec: '托管集群 2 节点', prices: buildPrices(ecsPrices, 2.5) },
+        { spec: '托管集群 4 节点', prices: buildPrices(ecsPrices, 5) },
+        { spec: '托管集群 8 节点', prices: buildPrices(ecsPrices, 10) },
+      ],
+      source: cfg.mode === 'api' ? 'api' : 'mock',
+      cached_at: new Date().toISOString(),
+      ttl_hours: Number(cfg.refresh_interval_hours) || 4,
+    }
+  },
+  rds: (region) => {
+    const cfg = loadCloudPricingConfig()
+    const rdsPrices = {}
+    cfg.clouds.forEach(c => { if (c.enabled) rdsPrices[c.id] = c.unitPrices.rds })
+    return {
+      data: [
+        { spec: 'MySQL 2C4G', prices: buildPrices(rdsPrices, 0.5) },
+        { spec: 'MySQL 4C8G', prices: buildPrices(rdsPrices, 1) },
+      ],
+      source: cfg.mode === 'api' ? 'api' : 'mock',
+      cached_at: new Date().toISOString(),
+      ttl_hours: Number(cfg.refresh_interval_hours) || 4,
+    }
+  },
+  oss: (region) => {
+    const cfg = loadCloudPricingConfig()
+    const storagePrices = {}
+    cfg.clouds.forEach(c => { if (c.enabled) storagePrices[c.id] = c.unitPrices.storage })
+    return {
+      data: [
+        { spec: '标准存储 100GB', prices: buildPrices(storagePrices, 1) },
+      ],
+      source: cfg.mode === 'api' ? 'api' : 'mock',
+      cached_at: new Date().toISOString(),
+      ttl_hours: Number(cfg.refresh_interval_hours) || 4,
+    }
+  },
+  network: (region) => {
+    const cfg = loadCloudPricingConfig()
+    const networkPrices = {}
+    cfg.clouds.forEach(c => { if (c.enabled) networkPrices[c.id] = c.unitPrices.network })
+    return {
+      data: [
+        { spec: '公网带宽 10Mbps', prices: buildPrices(networkPrices, 10) },
+      ],
+      source: cfg.mode === 'api' ? 'api' : 'mock',
+      cached_at: new Date().toISOString(),
+      ttl_hours: Number(cfg.refresh_interval_hours) || 4,
+    }
+  },
+  calculate: (data) => {
+    const ecsCount = Number(data.ecs_count) || 0
+    const rdsCount = Number(data.rds_count) || 0
+    const storageTB = Number(data.storage_tb) || 0
+    const bandwidth = Number(data.bandwidth) || 0
+
+    const cfg = loadCloudPricingConfig()
+    const enabledClouds = cfg.clouds.filter(c => c.enabled)
+
+    // 支持按 selectedClouds 过滤，未传则默认全部启用云
+    const requestedIds = data.clouds ? data.clouds.split(',').filter(Boolean) : enabledClouds.map(c => c.id)
+    const cloudMap = {}
+    enabledClouds.forEach(c => { cloudMap[c.id] = c })
+
+    const cloudNameMap = { aliyun: '阿里云', huawei: '华为云', tencent: '腾讯云', aws: 'AWS', azure: 'Azure', baidu: '百度云', jd: '京东云', ucloud: 'UCloud' }
+
+    const results = requestedIds.map(id => {
+      const c = cloudMap[id]
+      if (!c) return null
+      const p = c.unitPrices
+      const ecsCost = Math.round(ecsCount * p.ecs * 100) / 100
+      const rdsCost = Math.round(rdsCount * p.rds * 100) / 100
+      const storageCost = Math.round(storageTB * 10 * p.storage * 100) / 100
+      const networkCost = Math.round(bandwidth * p.network * 100) / 100
+      const monthly = Math.round((ecsCost + rdsCost + storageCost + networkCost) * 100) / 100
+      return {
+        cloud: cloudNameMap[id],
+        monthly,
+        annual: monthly * 12,
+        cheapest: false,
+        breakdown: {
+          ecs: { count: ecsCount, unit: p.ecs, total: ecsCost },
+          rds: { count: rdsCount, unit: p.rds, total: rdsCost },
+          storage: { count: storageTB, unit: p.storage, total: storageCost },
+          network: { count: bandwidth, unit: p.network, total: networkCost },
+        }
+      }
+    }).filter(Boolean)
+
+    // 标记最低价的云
+    if (results.length > 0) {
+      const minMonthly = Math.min(...results.map(r => r.monthly))
+      results.forEach(r => { if (r.monthly === minMonthly) r.cheapest = true })
+    }
+
+    return results
+  },
+  status: () => {
+    const cfg = loadCloudPricingConfig()
+    return {
+      status: 'ok',
+      mode: cfg.mode,
+      enabled_clouds: cfg.clouds.filter(c => c.enabled).map(c => c.id),
+      message: cfg.mode === 'api' ? 'API pricing mode configured' : 'Mock pricing service is active',
+    }
+  },
 }
 
 export function isDevMode() {
-  return DEV_MODE
+  // 强制使用 Mock 数据，不依赖 Vite 的 DEV 模式
+  return true
 }

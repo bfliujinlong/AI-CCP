@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
+import { getItem, removeItem } from '@/utils/db'
 
 const DEV_MODE = import.meta.env.DEV
 
@@ -11,7 +12,7 @@ const http = axios.create({
 
 http.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token')
+    const token = getItem('token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -28,8 +29,8 @@ http.interceptors.response.use(
     }
     const msg = error.response?.data?.detail || error.message || 'Request failed'
     if (error.response?.status === 401) {
-      localStorage.removeItem('token')
-      localStorage.removeItem('user')
+      removeItem('token')
+      removeItem('user')
       router.push('/login')
       ElMessage.error('Session expired, please login again')
     } else {

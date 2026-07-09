@@ -1,4 +1,5 @@
 import os
+from typing import List
 from pydantic_settings import BaseSettings
 
 
@@ -8,7 +9,11 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
     API_V1_STR: str = "/api/v1"
 
-    DATABASE_URL: str = "postgresql+asyncpg://aicc:aicc_secret_2024@localhost:5432/aicc"
+    # Whether to auto-create tables via SQLAlchemy (dev only).
+    # In production, set AUTO_CREATE_TABLES=false and use alembic upgrade head.
+    AUTO_CREATE_TABLES: bool = True
+
+    DATABASE_URL: str = "sqlite+aiosqlite:///./aicc.db"
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
 
@@ -47,7 +52,7 @@ class Settings(BaseSettings):
     SHOW_DEFAULT_PASSWORD_ON_LOGIN: bool = False
 
     @property
-    def cors_origins_list(self) -> list[str]:
+    def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
 
     class Config:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 
 from sqlalchemy import select, func
@@ -14,7 +16,7 @@ class FactSheetService:
         self.repo = FactSheetRepository(db)
         self.registry_repo = FactRegistryRepository(db)
 
-    async def get_by_opportunity(self, opportunity_id: UUID, category: str | None = None) -> list[FactSheet]:
+    async def get_by_opportunity(self, opportunity_id: UUID, category: str | None = None) -> List[FactSheet]:
         return await self.repo.get_by_opportunity(opportunity_id, category)
 
     async def create(self, data: FactSheetCreate, user_id: UUID) -> FactSheet:

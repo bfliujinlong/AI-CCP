@@ -1,3 +1,4 @@
+import os
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
@@ -6,6 +7,13 @@ from app.core.database import Base
 from app.models.models import User, Role, Customer, Opportunity, FactSheet, Skill, PromptTemplate, FactRegistry
 
 config = context.config
+
+database_url = os.environ.get("DATABASE_URL")
+if database_url:
+    if database_url.startswith("postgresql+asyncpg://"):
+        database_url = database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    config.set_main_option("sqlalchemy.url", database_url)
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 

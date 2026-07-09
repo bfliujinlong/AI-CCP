@@ -1,3 +1,5 @@
+from __future__ import annotations
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 
 from sqlalchemy import select, func
@@ -16,7 +18,7 @@ class CustomerRepository:
 
     async def get_all(
         self, skip: int = 0, limit: int = 20, search: str | None = None, is_active: bool | None = None
-    ) -> list[Customer]:
+    ) -> List[Customer]:
         query = select(Customer)
         if search:
             query = query.where(Customer.name.ilike(f"%{search}%"))

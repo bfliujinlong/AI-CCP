@@ -1,3 +1,5 @@
+from __future__ import annotations
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -14,7 +16,7 @@ class FactSheetRepository:
         result = await self.db.execute(select(FactSheet).where(FactSheet.id == fact_sheet_id))
         return result.scalar_one_or_none()
 
-    async def get_by_opportunity(self, opportunity_id: UUID, category: str | None = None) -> list[FactSheet]:
+    async def get_by_opportunity(self, opportunity_id: UUID, category: str | None = None) -> List[FactSheet]:
         query = select(FactSheet).where(FactSheet.opportunity_id == opportunity_id)
         if category:
             query = query.where(FactSheet.category == category)
@@ -45,7 +47,7 @@ class FactRegistryRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_all(self, category: str | None = None) -> list[FactRegistry]:
+    async def get_all(self, category: str | None = None) -> List[FactRegistry]:
         query = select(FactRegistry)
         if category:
             query = query.where(FactRegistry.category == category)

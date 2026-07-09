@@ -38,9 +38,27 @@
             <div style="text-align: center; padding: 40px 0">
               <el-icon :size="80" color="#dcdfe6"><Grid /></el-icon>
               <h3 style="color: #606266; margin: 16px 0">AI 自动生成 WBS</h3>
-              <p style="color: #909399; margin-bottom: 24px">
-                基于 Fact Sheet 数据，AI 将自动生成工作分解结构（Work Breakdown Structure）
+              <p style="color: #909399; margin-bottom: 12px">
+                基于报价评估数据和 Fact Sheet，AI 将自动生成工作分解结构（Work Breakdown Structure）
               </p>
+              <div v-if="projectTypeName" style="margin-bottom: 12px">
+                <span style="color: #606266; font-size: 14px; margin-right: 8px">项目类型:</span>
+                <el-tag type="primary" size="large" effect="dark">{{ projectTypeName }}</el-tag>
+              </div>
+              <div v-if="hasQuotation" style="margin-bottom: 16px; padding: 12px; background: #f0f9ff; border-radius: 8px; border: 1px solid #d0e8ff">
+                <div style="font-size: 14px; color: #409EFF; margin-bottom: 6px; font-weight: 600">已检测到报价数据</div>
+                <div style="font-size: 13px; color: #606266">
+                  总工时: <strong>{{ quotationTotalHours }} 人天</strong> |
+                  预计周期: <strong>{{ quotationTotalWeeks }} 周</strong> |
+                  <span style="color: #67C23A">WBS 人天将按报价阶段工时分配</span>
+                </div>
+              </div>
+              <div v-else style="margin-bottom: 16px; padding: 10px; background: #fdf6ec; border-radius: 8px; border: 1px solid #faecd8">
+                <div style="font-size: 13px; color: #E6A23C">
+                  未检测到报价数据，WBS 将使用默认估算生成。
+                  <el-link type="primary" :underline="false" @click="$router.push(`/quotation/${opportunityId}`)">去生成报价</el-link>
+                </div>
+              </div>
               <el-button type="primary" size="large" :loading="generating" :disabled="!latestFactSheet" @click="generateWBS">
                 <el-icon><MagicStick /></el-icon> 生成 WBS
               </el-button>
@@ -65,6 +83,9 @@
                   </el-button>
                   <el-button size="small" @click="exportWBS('word')">
                     <el-icon><Download /></el-icon> 导出 Word
+                  </el-button>
+                  <el-button size="small" @click="exportWBS('pdf')">
+                    <el-icon><Download /></el-icon> 导出 PDF
                   </el-button>
                 </div>
               </div>
@@ -187,6 +208,11 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { opportunityApi, factsheetApi } from '@/api'
 import { ElMessage } from 'element-plus'
+import * as XLSX from 'xlsx'
+import dayjs from 'dayjs'
+import { exportDocument } from '@/utils/export'
+import { getJSON, setJSON } from '@/utils/db'
+import { generateWBSByType, getProjectTypeName } from '@/utils/wbsTemplates'
 
 const route = useRoute()
 const opportunityId = route.params.opportunityId
@@ -202,6 +228,13 @@ const phaseColors = ['', 'success', 'warning', 'danger', 'info']
 const phaseBarColors = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399']
 
 const latestFactSheet = computed(() => factSheets.value.length > 0 ? factSheets.value[0] : null)
+const projectType = computed(() => latestFactSheet.value?.facts?.project_type || '')
+const projectTypeName = computed(() => projectType.value ? getProjectTypeName(projectType.value) : '')
+const quotationData = computed(() => getJSON(`aicc_quotation_${opportunityId}`))
+const sowData = computed(() => getJSON(`aicc_sow_${opportunityId}`))
+const hasQuotation = computed(() => !!quotationData.value?.estimate)
+const quotationTotalHours = computed(() => quotationData.value?.estimate?.totalHours || 0)
+const quotationTotalWeeks = computed(() => quotationData.value?.estimate?.totalWeeks || 0)
 
 const totalTasks = computed(() => wbsData.value ? wbsData.value.phases.reduce((s, p) => s + p.tasks.length, 0) : 0)
 const totalDays = computed(() => wbsData.value ? wbsData.value.phases.reduce((s, p) => s + phaseDays(p), 0) : 0)
@@ -211,6 +244,9 @@ const factLabels = {
   project_type: '项目类型', current_cloud: '当前云', target_cloud: '目标云',
   vm_count: 'VM数量', database_count: '数据库数量', region_count: 'Region数量',
   account_count: '账号数量', vpc_count: 'VPC数量', security_level: '安全等级',
+  architecture_type: '架构类型', app_count: '业务应用数', microservice_count: '微服务数量',
+  k8s_cluster_count: 'K8s集群数', container_count: '容器实例数', api_count: 'API数量',
+  storage_tb: '存储容量(TB)', bandwidth_mbps: '带宽需求(Mbps)',
 }
 function factLabel(key) { return factLabels[key] || key }
 
@@ -257,9 +293,21 @@ function parseWeeks(durationStr) {
 onMounted(async () => {
   loading.value = true
   try {
-    const opp = await opportunityApi.get(opportunityId)
-    opportunityName.value = opp.name
+    try {
+      const opp = await opportunityApi.get(opportunityId)
+      opportunityName.value = opp.name
+    } catch (e) {
+      console.warn('[WbsView] 加载商机信息失败，使用默认数据:', e)
+      opportunityName.value = '未知商机'
+    }
     factSheets.value = await factsheetApi.list(opportunityId)
+    // 加载已保存的 WBS
+    const saved = getJSON(`aicc_wbs_${opportunityId}`)
+    if (saved) {
+      wbsData.value = saved
+      workflowStep.value = 5
+      expandedPhases.value = saved.phases.map((_, i) => i)
+    }
   } finally {
     loading.value = false
   }
@@ -271,139 +319,122 @@ async function generateWBS() {
   try {
     const facts = latestFactSheet.value.facts
     const projectType = facts.project_type || 'landing_zone'
-    const vmCount = facts.vm_count || 0
-    const dbCount = facts.database_count || 0
-    const regionCount = facts.region_count || 1
-    const accountCount = facts.account_count || 1
-    const vpcCount = facts.vpc_count || 0
+    const typeName = getProjectTypeName(projectType)
 
-    if (projectType === 'landing_zone') {
-      wbsData.value = {
-        phases: [
-          {
-            name: '项目启动与评估', duration: '1周',
-            tasks: [
-              { name: '项目启动会', description: '确认项目范围、目标、团队', duration_days: 1, role: '项目经理', dependencies: [], deliverable: '项目章程' },
-              { name: '现状调研', description: `调研${accountCount}个账号现状、${vmCount}台VM分布`, duration_days: 2, role: '云架构师', dependencies: ['项目启动会'], deliverable: '调研报告' },
-              { name: '需求确认', description: '确认安全等级、合规要求、网络需求', duration_days: 2, role: '云架构师', dependencies: ['现状调研'], deliverable: '需求规格书' },
-            ],
-          },
-          {
-            name: '架构设计', duration: '2周',
-            tasks: [
-              { name: '账号体系设计', description: `设计${accountCount}个云账号的组织结构`, duration_days: 2, role: '云架构师', dependencies: ['需求确认'], deliverable: '账号架构图' },
-              { name: '网络架构设计', description: `设计${regionCount}个Region、${vpcCount}个VPC的网络拓扑`, duration_days: 3, role: '网络工程师', dependencies: ['需求确认'], deliverable: '网络架构图' },
-              { name: '安全架构设计', description: '设计IAM策略、安全组、加密方案', duration_days: 2, role: '安全顾问', dependencies: ['需求确认'], deliverable: '安全架构图' },
-              { name: '治理架构设计', description: '设计标签策略、成本管理、合规审计', duration_days: 2, role: '云架构师', dependencies: ['账号体系设计'], deliverable: '治理方案' },
-              { name: '架构评审', description: '客户评审架构方案', duration_days: 1, role: '项目总监', dependencies: ['网络架构设计', '安全架构设计', '治理架构设计'], deliverable: '评审纪要' },
-            ],
-          },
-          {
-            name: '实施部署', duration: '3周',
-            tasks: [
-              { name: 'Landing Zone 基础部署', description: '部署账号结构、Organization', duration_days: 2, role: '云工程师', dependencies: ['架构评审'], deliverable: '部署报告' },
-              { name: '网络配置', description: `配置${regionCount}个Region的VPC和子网`, duration_days: 3, role: '网络工程师', dependencies: ['Landing Zone 基础部署'], deliverable: '网络配置文档' },
-              { name: '安全配置', description: '配置IAM、安全组、WAF', duration_days: 3, role: '安全顾问', dependencies: ['Landing Zone 基础部署'], deliverable: '安全配置文档' },
-              { name: '监控告警部署', description: '部署CloudMonitor、日志服务', duration_days: 2, role: '云工程师', dependencies: ['网络配置'], deliverable: '监控配置文档' },
-              { name: '治理工具部署', description: '配置标签策略、成本管理工具', duration_days: 2, role: '云工程师', dependencies: ['安全配置'], deliverable: '治理配置文档' },
-              { name: '集成测试', description: '端到端功能测试', duration_days: 3, role: '云工程师', dependencies: ['监控告警部署', '治理工具部署'], deliverable: '测试报告' },
-            ],
-          },
-          {
-            name: '验收与交付', duration: '1周',
-            tasks: [
-              { name: '安全审计', description: '执行安全合规审计', duration_days: 1, role: '安全顾问', dependencies: ['集成测试'], deliverable: '安全审计报告' },
-              { name: '用户验收测试', description: '客户UAT测试', duration_days: 2, role: '项目经理', dependencies: ['安全审计'], deliverable: 'UAT报告' },
-              { name: '文档交付', description: '交付运维手册、培训材料', duration_days: 1, role: '云架构师', dependencies: ['用户验收测试'], deliverable: '运维手册' },
-              { name: '培训', description: '客户团队培训', duration_days: 1, role: '云架构师', dependencies: ['文档交付'], deliverable: '培训记录' },
-              { name: '项目结项', description: '项目总结、经验沉淀', duration_days: 0.5, role: '项目总监', dependencies: ['培训'], deliverable: '结项报告' },
-            ],
-          },
-        ],
-      }
-    } else if (projectType === 'migration') {
-      wbsData.value = {
-        phases: [
-          {
-            name: '迁移评估', duration: '2周',
-            tasks: [
-              { name: '资产盘点', description: `盘点${vmCount}台VM和${dbCount}个数据库`, duration_days: 3, role: '云架构师', dependencies: [], deliverable: '资产清单' },
-              { name: '迁移可行性分析', description: '分析每台VM/DB的迁移可行性', duration_days: 3, role: '云架构师', dependencies: ['资产盘点'], deliverable: '可行性报告' },
-              { name: '迁移策略制定', description: '制定Rehost/Replatform/Refactor策略', duration_days: 2, role: '云架构师', dependencies: ['迁移可行性分析'], deliverable: '迁移策略文档' },
-              { name: '工具选型', description: '选择迁移工具和方案', duration_days: 2, role: '云工程师', dependencies: ['迁移策略制定'], deliverable: '工具选型报告' },
-            ],
-          },
-          {
-            name: '迁移设计', duration: '2周',
-            tasks: [
-              { name: '目标架构设计', description: '设计云上目标架构', duration_days: 3, role: '云架构师', dependencies: ['工具选型'], deliverable: '目标架构图' },
-              { name: '迁移方案设计', description: '设计分批迁移方案和回滚策略', duration_days: 3, role: '云架构师', dependencies: ['目标架构设计'], deliverable: '迁移方案' },
-              { name: '网络方案设计', description: '设计混合云网络连通方案', duration_days: 2, role: '网络工程师', dependencies: ['目标架构设计'], deliverable: '网络方案' },
-              { name: '方案评审', description: '客户评审迁移方案', duration_days: 1, role: '项目总监', dependencies: ['迁移方案设计', '网络方案设计'], deliverable: '评审纪要' },
-            ],
-          },
-          {
-            name: '迁移实施', duration: '4周',
-            tasks: [
-              { name: '环境准备', description: '准备目标云环境', duration_days: 2, role: '云工程师', dependencies: ['方案评审'], deliverable: '环境就绪报告' },
-              { name: 'POC迁移', description: '选择3-5台VM进行POC', duration_days: 3, role: '云工程师', dependencies: ['环境准备'], deliverable: 'POC报告' },
-              { name: '第一批迁移', description: `迁移${Math.ceil(vmCount * 0.3)}台VM`, duration_days: 5, role: '云工程师', dependencies: ['POC迁移'], deliverable: '迁移报告' },
-              { name: '第二批迁移', description: `迁移${Math.ceil(vmCount * 0.4)}台VM和${Math.ceil(dbCount * 0.5)}个DB`, duration_days: 5, role: '云工程师', dependencies: ['第一批迁移'], deliverable: '迁移报告' },
-              { name: '第三批迁移', description: `迁移剩余VM和DB`, duration_days: 5, role: '云工程师', dependencies: ['第二批迁移'], deliverable: '迁移报告' },
-            ],
-          },
-          {
-            name: '割接与验证', duration: '2周',
-            tasks: [
-              { name: '数据同步验证', description: '验证数据一致性', duration_days: 2, role: '云工程师', dependencies: ['第三批迁移'], deliverable: '验证报告' },
-              { name: '业务割接', description: '正式切换流量到云上', duration_days: 2, role: '项目经理', dependencies: ['数据同步验证'], deliverable: '割接报告' },
-              { name: '性能测试', description: '云上性能压测', duration_days: 2, role: '云工程师', dependencies: ['业务割接'], deliverable: '性能报告' },
-              { name: '优化调整', description: '根据测试结果优化配置', duration_days: 2, role: '云架构师', dependencies: ['性能测试'], deliverable: '优化报告' },
-              { name: '项目结项', description: '项目总结与交付', duration_days: 1, role: '项目总监', dependencies: ['优化调整'], deliverable: '结项报告' },
-            ],
-          },
-        ],
-      }
-    } else {
-      wbsData.value = {
-        phases: [
-          {
-            name: '需求分析', duration: '2周',
-            tasks: [
-              { name: '需求调研', description: '业务需求梳理', duration_days: 3, role: '云架构师', dependencies: [], deliverable: '需求文档' },
-              { name: '技术评估', description: '技术可行性评估', duration_days: 3, role: '云架构师', dependencies: ['需求调研'], deliverable: '评估报告' },
-              { name: '方案设计', description: '整体方案设计', duration_days: 4, role: '云架构师', dependencies: ['技术评估'], deliverable: '方案文档' },
-            ],
-          },
-          {
-            name: '实施部署', duration: '4周',
-            tasks: [
-              { name: '环境搭建', description: '基础环境搭建', duration_days: 3, role: '云工程师', dependencies: ['方案设计'], deliverable: '环境报告' },
-              { name: '核心功能实施', description: '核心功能开发部署', duration_days: 10, role: '云工程师', dependencies: ['环境搭建'], deliverable: '实施报告' },
-              { name: '测试验证', description: '功能与性能测试', duration_days: 5, role: '云工程师', dependencies: ['核心功能实施'], deliverable: '测试报告' },
-            ],
-          },
-          {
-            name: '交付验收', duration: '1周',
-            tasks: [
-              { name: '文档交付', description: '交付运维文档', duration_days: 2, role: '云架构师', dependencies: ['测试验证'], deliverable: '运维手册' },
-              { name: '培训与结项', description: '团队培训和项目结项', duration_days: 2, role: '项目总监', dependencies: ['文档交付'], deliverable: '结项报告' },
-            ],
-          },
-        ],
-      }
-    }
+    // 读取报价数据和 SOW 数据
+    const quotation = getJSON(`aicc_quotation_${opportunityId}`)
+    const sow = getJSON(`aicc_sow_${opportunityId}`)
+
+    // 按项目类型 + 报价数据生成 WBS
+    wbsData.value = generateWBSByType(projectType, facts, quotation, sow, opportunityName.value)
 
     workflowStep.value = 5
     expandedPhases.value = wbsData.value.phases.map((_, i) => i)
-    ElMessage.success('WBS 生成完成')
+    // 持久化到 IndexedDB
+    setJSON(`aicc_wbs_${opportunityId}`, wbsData.value)
+
+    const sourceMsg = wbsData.value.source === 'quotation' && hasQuotation.value
+      ? `（基于报价${quotationTotalHours.value}人天分配）`
+      : '（使用默认估算）'
+    ElMessage.success(`${typeName}项目 WBS 生成完成${sourceMsg}`)
   } finally {
     generating.value = false
   }
 }
 
-function exportWBS(format) {
-  ElMessage.success(`${format.toUpperCase()} 导出功能开发中...`)
+async function exportWBS(format) {
+  if (format === 'excel') {
+    exportToExcel()
+  } else if (format === 'word' || format === 'pdf') {
+    if (!wbsData.value) {
+      ElMessage.warning('请先生成 WBS')
+      return
+    }
+    const sections = []
+    wbsData.value.phases.forEach((phase, pIdx) => {
+      sections.push({
+        heading: `阶段 ${pIdx + 1}: ${phase.name} (${phase.duration})`,
+        paragraphs: [`任务数: ${phase.tasks.length} | 人天: ${phaseDays(phase)}`],
+        table: {
+          headers: ['序号', '任务名称', '描述', '人天', '角色', '依赖', '交付物'],
+          rows: phase.tasks.map((t, tIdx) => [
+            String(tIdx + 1),
+            t.name,
+            t.description,
+            String(t.duration_days),
+            t.role,
+            Array.isArray(t.dependencies) ? t.dependencies.join(', ') : (t.dependencies || '-'),
+            t.deliverable || '-',
+          ]),
+        },
+      })
+    })
+    const doc = {
+      title: `WBS - ${opportunityName.value || '项目'}`,
+      subtitle: `生成时间: ${dayjs().format('YYYY-MM-DD HH:mm')} | 总任务: ${totalTasks.value} | 总人天: ${totalDays.value}`,
+      sections,
+    }
+    try {
+      ElMessage.info(`正在导出 ${format.toUpperCase()}...`)
+      await exportDocument(format, doc, `WBS_${opportunityName.value || '项目'}_${dayjs().format('YYYYMMDD')}`, { orientation: 'landscape' })
+      ElMessage.success(`WBS 已导出为 ${format.toUpperCase()}`)
+    } catch (e) {
+      ElMessage.error(`导出失败: ${e.message}`)
+    }
+  }
+}
+
+function exportToExcel() {
+  if (!wbsData.value) {
+    ElMessage.warning('请先生成 WBS')
+    return
+  }
+
+  const detailRows = []
+  const phaseRows = []
+
+  wbsData.value.phases.forEach((phase, pIdx) => {
+    phaseRows.push({
+      阶段编号: `P${pIdx + 1}`,
+      阶段名称: phase.name,
+      周期: phase.duration,
+      任务数: phase.tasks.length,
+      人天: phaseDays(phase),
+    })
+
+    phase.tasks.forEach((task, tIdx) => {
+      detailRows.push({
+        阶段编号: `P${pIdx + 1}`,
+        阶段名称: phase.name,
+        序号: tIdx + 1,
+        任务名称: task.name,
+        描述: task.description,
+        人天: task.duration_days,
+        角色: task.role,
+        依赖: Array.isArray(task.dependencies) ? task.dependencies.join(', ') : (task.dependencies || '-'),
+        交付物: task.deliverable,
+      })
+    })
+  })
+
+  const wb = XLSX.utils.book_new()
+  const detailWs = XLSX.utils.json_to_sheet(detailRows)
+  const phaseWs = XLSX.utils.json_to_sheet(phaseRows)
+
+  detailWs['!cols'] = [
+    { wch: 10 }, { wch: 18 }, { wch: 8 }, { wch: 24 }, { wch: 32 }, { wch: 10 }, { wch: 12 }, { wch: 18 }, { wch: 18 },
+  ]
+  phaseWs['!cols'] = [
+    { wch: 10 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
+  ]
+
+  XLSX.utils.book_append_sheet(wb, detailWs, 'WBS明细')
+  XLSX.utils.book_append_sheet(wb, phaseWs, '阶段汇总')
+
+  const fileName = `WBS_${opportunityName.value || '项目'}_${new Date().toISOString().slice(0, 10)}.xlsx`
+  XLSX.writeFile(wb, fileName)
+
+  ElMessage.success(`已导出 ${fileName}`)
 }
 
 function exportAll() {

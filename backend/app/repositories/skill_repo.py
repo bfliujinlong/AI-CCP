@@ -1,3 +1,5 @@
+from __future__ import annotations
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -18,7 +20,7 @@ class SkillRepository:
         result = await self.db.execute(select(Skill).where(Skill.name == name))
         return result.scalar_one_or_none()
 
-    async def get_all(self, category: str | None = None) -> list[Skill]:
+    async def get_all(self, category: str | None = None) -> List[Skill]:
         query = select(Skill)
         if category:
             query = query.where(Skill.category == category)

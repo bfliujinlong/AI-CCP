@@ -31,7 +31,11 @@
         <el-col :span="6" v-for="cloud in clouds" :key="cloud.id">
           <el-card shadow="hover" class="cloud-card" :class="{ 'cloud-selected': selectedClouds.includes(cloud.id) }" @click="toggleCloud(cloud.id)">
             <div class="cloud-logo-area">
-              <img :src="cloud.logo" :alt="cloud.name" class="cloud-logo" />
+              <a :href="cloud.pricingUrl" target="_blank" rel="noopener noreferrer" title="点击跳转到官网价格/计费页面" @click.stop>
+                <div class="cloud-badge" :style="{ background: cloud.color }">
+                  {{ cloud.shortName }}
+                </div>
+              </a>
             </div>
             <h3 class="cloud-name">{{ cloud.name }}</h3>
             <p class="cloud-desc">{{ cloud.desc }}</p>
@@ -43,7 +47,7 @@
               <el-tag size="small" type="warning" v-else>国际</el-tag>
             </div>
             <div class="cloud-check">
-              <el-checkbox :model-value="selectedClouds.includes(cloud.id)" @click.stop>对比</el-checkbox>
+              <el-checkbox :model-value="selectedClouds.includes(cloud.id)" @click.stop @change="toggleCloud(cloud.id)">对比</el-checkbox>
             </div>
           </el-card>
         </el-col>
@@ -134,16 +138,16 @@
       <el-card shadow="never" class="cost-summary">
         <el-form :model="costForm" label-width="120px" inline>
           <el-form-item label="ECS 实例数">
-            <el-input-number v-model="costForm.ecs_count" :min="1" :max="1000" />
+            <el-input v-model.number="costForm.ecs_count" type="number" :min="1" :max="1000" placeholder="请输入数量" style="width: 140px" />
           </el-form-item>
           <el-form-item label="RDS 实例数">
-            <el-input-number v-model="costForm.rds_count" :min="0" :max="100" />
+            <el-input v-model.number="costForm.rds_count" type="number" :min="0" :max="100" placeholder="请输入数量" style="width: 140px" />
           </el-form-item>
           <el-form-item label="存储 (TB)">
-            <el-input-number v-model="costForm.storage_tb" :min="0" :max="100" />
+            <el-input v-model.number="costForm.storage_tb" type="number" :min="0" :max="100" placeholder="请输入容量" style="width: 140px" />
           </el-form-item>
           <el-form-item label="带宽 (Mbps)">
-            <el-input-number v-model="costForm.bandwidth" :min="0" :max="10000" />
+            <el-input v-model.number="costForm.bandwidth" type="number" :min="0" :max="10000" placeholder="请输入带宽" style="width: 140px" />
           </el-form-item>
           <el-form-item>
             <el-button type="primary" @click="calcTotalCost">计算总成本</el-button>
@@ -152,12 +156,39 @@
 
         <el-row :gutter="16" style="margin-top: 20px" v-if="totalCosts.length > 0">
           <el-col :span="6" v-for="cost in totalCosts" :key="cost.cloud">
-            <el-card shadow="hover" :class="{ 'cheapest-card': cost.cheapest }">
-              <div class="cost-cloud-name">{{ cost.cloud }}</div>
-              <div class="cost-amount">¥{{ Number(cost.monthly).toLocaleString() }}<span class="cost-unit">/月</span></div>
-              <div class="cost-annual">年费: ¥{{ Number(cost.annual).toLocaleString() }}</div>
-              <el-tag v-if="cost.cheapest" type="success" size="large" effect="dark" style="margin-top: 8px">最优选择</el-tag>
-            </el-card>
+            <el-popover placement="top" :width="260" trigger="hover" :show-after="200">
+              <template #reference>
+                <el-card shadow="hover" :class="{ 'cheapest-card': cost.cheapest }" class="cost-card-hover">
+                  <div class="cost-cloud-name">{{ cost.cloud }}</div>
+                  <div class="cost-amount">¥{{ Number(cost.monthly).toLocaleString() }}<span class="cost-unit">/月</span></div>
+                  <div class="cost-annual">年费: ¥{{ Number(cost.annual).toLocaleString() }}</div>
+                  <el-tag v-if="cost.cheapest" type="success" size="large" effect="dark" style="margin-top: 8px">最优选择</el-tag>
+                </el-card>
+              </template>
+              <div class="cost-breakdown">
+                <div class="breakdown-title">{{ cost.cloud }} 费用明细</div>
+                <div class="breakdown-row">
+                  <span>ECS ({{ cost.breakdown?.ecs?.count || 0 }} × ¥{{ cost.breakdown?.ecs?.unit || 0 }})</span>
+                  <span>¥{{ Number(cost.breakdown?.ecs?.total || 0).toLocaleString() }}</span>
+                </div>
+                <div class="breakdown-row">
+                  <span>RDS ({{ cost.breakdown?.rds?.count || 0 }} × ¥{{ cost.breakdown?.rds?.unit || 0 }})</span>
+                  <span>¥{{ Number(cost.breakdown?.rds?.total || 0).toLocaleString() }}</span>
+                </div>
+                <div class="breakdown-row">
+                  <span>存储 ({{ cost.breakdown?.storage?.count || 0 }}TB × 10 × ¥{{ cost.breakdown?.storage?.unit || 0 }})</span>
+                  <span>¥{{ Number(cost.breakdown?.storage?.total || 0).toLocaleString() }}</span>
+                </div>
+                <div class="breakdown-row">
+                  <span>带宽 ({{ cost.breakdown?.network?.count || 0 }}Mbps × ¥{{ cost.breakdown?.network?.unit || 0 }})</span>
+                  <span>¥{{ Number(cost.breakdown?.network?.total || 0).toLocaleString() }}</span>
+                </div>
+                <div class="breakdown-row breakdown-total">
+                  <span>合计</span>
+                  <span>¥{{ Number(cost.monthly).toLocaleString() }}</span>
+                </div>
+              </div>
+            </el-popover>
           </el-col>
         </el-row>
       </el-card>
@@ -166,7 +197,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { cloudPricingApi } from '@/api'
 
@@ -176,26 +207,15 @@ const priceLoading = ref(false)
 const priceTab = ref('ecs')
 const priceMeta = reactive({ source: '', cached_at: null, ttl_hours: null, note: '' })
 
-const cloudLogos = {
-  aliyun: 'https://img.alicdn.com/tfs/TB1Ly5oS3HqK1RjSZFPXXcwapXa-238-54.png',
-  huawei: 'https://res.hc-cdn.com/tinyui/5.1.0.87/themes/default/images/logo.svg',
-  tencent: 'https://cloud.tencent.com/static/img/iaas-logo.svg',
-  aws: 'https://upload.wikimedia.org/wikipedia/commons/9/93/Amazon_Web_Services_Logo.svg',
-  azure: 'https://azure.microsoft.com/static/images/shared/social/azure-icon-250x250.png',
-  baidu: 'https://bce.bdstatic.com/img/favicon.ico',
-  jd: 'https://www.jdcloud.com/favicon.ico',
-  ucloud: 'https://www.ucloud.cn/static/images/favicon.ico',
-}
-
 const clouds = [
-  { id: 'aliyun', name: '阿里云', desc: '国内市场份额第一，生态最完善', tier: 'tier1', domestic: true, logo: cloudLogos.aliyun },
-  { id: 'huawei', name: '华为云', desc: '政企首选，信创合规优势', tier: 'tier1', domestic: true, logo: cloudLogos.huawei },
-  { id: 'tencent', name: '腾讯云', desc: '游戏/社交生态，性价比高', tier: 'tier1', domestic: true, logo: cloudLogos.tencent },
-  { id: 'aws', name: 'AWS', desc: '全球最大云厂商，服务最丰富', tier: 'tier1', domestic: false, logo: cloudLogos.aws },
-  { id: 'azure', name: 'Azure', desc: '微软生态，混合云优势', tier: 'tier1', domestic: false, logo: cloudLogos.azure },
-  { id: 'baidu', name: '百度云', desc: 'AI 能力突出，智能云', tier: 'tier2', domestic: true, logo: cloudLogos.baidu },
-  { id: 'jd', name: '京东云', desc: '电商/物流场景优势', tier: 'tier2', domestic: true, logo: cloudLogos.jd },
-  { id: 'ucloud', name: 'UCloud', desc: '中立云，科创板上市', tier: 'tier3', domestic: true, logo: cloudLogos.ucloud },
+  { id: 'aliyun', name: '阿里云', shortName: '阿里', desc: '国内市场份额第一，生态最完善', tier: 'tier1', domestic: true, color: '#FF6A00', pricingUrl: 'https://www.aliyun.com/price' },
+  { id: 'huawei', name: '华为云', shortName: '华为', desc: '政企首选，信创合规优势', tier: 'tier1', domestic: true, color: '#C7000B', pricingUrl: 'https://www.huaweicloud.com/pricing.html' },
+  { id: 'tencent', name: '腾讯云', shortName: '腾讯', desc: '游戏/社交生态，性价比高', tier: 'tier1', domestic: true, color: '#006EFF', pricingUrl: 'https://buy.cloud.tencent.com/price' },
+  { id: 'aws', name: 'AWS', shortName: 'AWS', desc: '全球最大云厂商，服务最丰富', tier: 'tier1', domestic: false, color: '#232F3E', pricingUrl: 'https://calculator.aws/' },
+  { id: 'azure', name: 'Azure', shortName: 'Azure', desc: '微软生态，混合云优势', tier: 'tier1', domestic: false, color: '#0078D4', pricingUrl: 'https://azure.microsoft.com/zh-cn/pricing/calculator/' },
+  { id: 'baidu', name: '百度云', shortName: '百度', desc: 'AI 能力突出，智能云', tier: 'tier2', domestic: true, color: '#2932E1', pricingUrl: 'https://cloud.baidu.com/product-pricing.html' },
+  { id: 'jd', name: '京东云', shortName: '京东', desc: '电商/物流场景优势', tier: 'tier2', domestic: true, color: '#E1251B', pricingUrl: 'https://www.jdcloud.com/cn/calculator' },
+  { id: 'ucloud', name: 'UCloud', shortName: 'UCloud', desc: '中立云，科创板上市', tier: 'tier3', domestic: true, color: '#23A8FA', pricingUrl: 'https://www.ucloud.cn/site/price.html' },
 ]
 
 const selectedCloudList = computed(() => clouds.filter(c => selectedClouds.value.includes(c.id)))
@@ -316,6 +336,19 @@ function refreshPrices() {
 onMounted(() => {
   loadAllPrices()
 })
+
+// 勾选了新的云厂商后自动刷新价格，避免表格列出现但无数据
+watch(selectedClouds, (newVal, oldVal) => {
+  if (!oldVal || newVal.length <= oldVal.length) return
+  const newCloud = newVal.find(id => !oldVal.includes(id))
+  if (newCloud) {
+    const hasData = ecsPrices.value.length > 0 && ecsPrices.value[0].prices?.[newCloud]
+    if (!hasData) {
+      loadAllPrices()
+    }
+  }
+  // 重新计算总成本时，若当前未计算则无需操作；用户会手动点按钮
+})
 </script>
 
 <style scoped>
@@ -338,8 +371,16 @@ onMounted(() => {
 }
 .cloud-card:hover { transform: translateY(-4px); }
 .cloud-card.cloud-selected { border-color: #409EFF; }
-.cloud-logo-area { height: 48px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
-.cloud-logo { width: 40px; height: 40px; object-fit: contain; border-radius: 4px; }
+.cloud-logo-area { height: 56px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
+.cloud-logo-area a { display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.cloud-badge {
+  width: 48px; height: 48px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 14px; font-weight: 700;
+  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+.cloud-logo-area a:hover .cloud-badge { transform: scale(1.1); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
 .cloud-name { font-size: 16px; font-weight: 600; margin: 8px 0 4px; }
 .cloud-desc { font-size: 12px; color: #909399; margin: 0 0 8px; line-height: 1.4; }
 .cloud-tags { display: flex; gap: 4px; justify-content: center; margin-bottom: 8px; }
@@ -351,9 +392,15 @@ onMounted(() => {
 .price-na { color: #c0c4cc; }
 
 .cost-summary { margin-top: 20px; }
+.cost-card-hover { cursor: pointer; transition: all 0.2s; }
+.cost-card-hover:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
 .cost-cloud-name { font-size: 14px; color: #606266; margin-bottom: 8px; }
 .cost-amount { font-size: 28px; font-weight: 700; color: #409EFF; }
 .cost-unit { font-size: 14px; font-weight: 400; color: #909399; }
 .cost-annual { font-size: 13px; color: #909399; margin-top: 4px; }
 .cheapest-card { border: 2px solid #67C23A; }
+.cost-breakdown { font-size: 13px; }
+.breakdown-title { font-weight: 600; margin-bottom: 8px; color: #303133; border-bottom: 1px solid #ebeef5; padding-bottom: 6px; }
+.breakdown-row { display: flex; justify-content: space-between; margin-bottom: 6px; color: #606266; }
+.breakdown-total { margin-top: 8px; padding-top: 6px; border-top: 1px dashed #ebeef5; font-weight: 600; color: #303133; }
 </style>

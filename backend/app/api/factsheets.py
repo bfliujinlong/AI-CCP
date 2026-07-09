@@ -1,18 +1,20 @@
+from __future__ import annotations
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import jwt, JWTError
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.factsheet import FactSheetCreate, FactSheetUpdate, FactSheetResponse, FactRegistryResponse
-from app.services.factsheet_service import FactSheetService
+from app.services.dashboard_service import FactSheetService
 
 router = APIRouter(prefix="/fact-sheets", tags=["Fact Sheets"])
 
 
-async def get_current_user(authorization: str = None) -> str:
+async def get_current_user(authorization: str = Header(None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     token = authorization.split(" ")[1]
@@ -23,12 +25,12 @@ async def get_current_user(authorization: str = None) -> str:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
 
-@router.get("/opportunity/{opportunity_id}", response_model=list[FactSheetResponse])
+@router.get("/opportunity/{opportunity_id}", response_model=List[FactSheetResponse])
 async def list_fact_sheets(
     opportunity_id: UUID,
     category: str | None = None,
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    authorization: str = Header(None),
 ):
     await get_current_user(authorization)
     service = FactSheetService(db)
@@ -40,7 +42,7 @@ async def list_fact_sheets(
 async def create_fact_sheet(
     data: FactSheetCreate,
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    authorization: str = Header(None),
 ):
     user_id = await get_current_user(authorization)
     service = FactSheetService(db)
@@ -53,7 +55,7 @@ async def update_fact_sheet(
     fact_sheet_id: UUID,
     data: FactSheetUpdate,
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    authorization: str = Header(None),
 ):
     user_id = await get_current_user(authorization)
     service = FactSheetService(db)
@@ -64,11 +66,11 @@ async def update_fact_sheet(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 
-@router.get("/registry", response_model=list[FactRegistryResponse])
+@router.get("/registry", response_model=List[FactRegistryResponse])
 async def list_fact_registry(
     category: str | None = None,
     db: AsyncSession = Depends(get_db),
-    authorization: str = None,
+    authorization: str = Header(None),
 ):
     await get_current_user(authorization)
     service = FactSheetService(db)
