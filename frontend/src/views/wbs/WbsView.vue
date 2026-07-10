@@ -209,6 +209,7 @@ import { useRoute } from 'vue-router'
 import { opportunityApi, factsheetApi } from '@/api'
 import { ElMessage } from 'element-plus'
 import * as XLSX from 'xlsx'
+import { saveAs } from 'file-saver'
 import dayjs from 'dayjs'
 import { exportDocument } from '@/utils/export'
 import { getJSON, setJSON } from '@/utils/db'
@@ -344,7 +345,12 @@ async function generateWBS() {
 
 async function exportWBS(format) {
   if (format === 'excel') {
-    exportToExcel()
+    try {
+      exportToExcel()
+    } catch (e) {
+      console.error('[exportWBS] Excel 导出失败:', e)
+      ElMessage.error(`Excel 导出失败: ${e.message}`)
+    }
   } else if (format === 'word' || format === 'pdf') {
     if (!wbsData.value) {
       ElMessage.warning('请先生成 WBS')
@@ -432,13 +438,64 @@ function exportToExcel() {
   XLSX.utils.book_append_sheet(wb, phaseWs, '阶段汇总')
 
   const fileName = `WBS_${opportunityName.value || '项目'}_${new Date().toISOString().slice(0, 10)}.xlsx`
-  XLSX.writeFile(wb, fileName)
+  // 用 write + Blob 替代 writeFile，兼容性更好（writeFile 在某些浏览器静默失败）
+  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+  const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  saveAs(blob, fileName)
 
   ElMessage.success(`已导出 ${fileName}`)
 }
 
-function exportAll() {
-  ElMessage.success('全部文档导出功能开发中...')
+async function exportAll() {
+  if (!wbsData.value) {
+    ElMessage.warning('请先生成 WBS')
+    return
+  }
+  ElMessage.info('正在生成 WBS 完整包...')
+  try {
+    // 1) 导出 Excel
+    const detailRows = []
+    const phaseRows = []
+    wbsData.value.phases.forEach((phase, pIdx) => {
+      phaseRows.push({ 阶段编号: `P${pIdx + 1}`, 阶段名称: phase.name, 周期: phase.duration, 任务数: phase.tasks.length, 人天: phaseDays(phase) })
+      phase.tasks.forEach((task, tIdx) => {
+        detailRows.push({ 阶段编号: `P${pIdx + 1}`, 阶段名称: phase.name, 序号: tIdx + 1, 任务名称: task.name, 描述: task.description, 人天: task.duration_days, 角色: task.role, 依赖: Array.isArray(task.dependencies) ? task.dependencies.join(', ') : (task.dependencies || '-'), 交付物: task.deliverable })
+      })
+    })
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), 'WBS明细')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(phaseRows), '阶段汇总')
+    const excelBuf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+    saveAs(new Blob([excelBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `WBS_${opportunityName.value || '项目'}_${dayjs().format('YYYYMMDD')}.xlsx`)
+
+    // 2) 导出 Word（让用户有可阅读版本）
+    const sections = []
+    wbsData.value.phases.forEach((phase, pIdx) => {
+      sections.push({
+        heading: `阶段 ${pIdx + 1}: ${phase.name} (${phase.duration})`,
+        paragraphs: [`任务数: ${phase.tasks.length} | 人天: ${phaseDays(phase)}`],
+        table: {
+          headers: ['序号', '任务名称', '描述', '人天', '角色', '依赖', '交付物'],
+          rows: phase.tasks.map((t, tIdx) => [String(tIdx + 1), t.name, t.description, String(t.duration_days), t.role, Array.isArray(t.dependencies) ? t.dependencies.join(', ') : (t.dependencies || '-'), t.deliverable || '-']),
+        },
+      })
+    })
+    const doc = {
+      title: `WBS - ${opportunityName.value || '项目'}`,
+      subtitle: `生成时间: ${dayjs().format('YYYY-MM-DD HH:mm')} | 总任务: ${totalTasks.value} | 总人天: ${totalDays.value}`,
+      sections,
+    }
+    await exportDocument('word', doc, `WBS_${opportunityName.value || '项目'}_${dayjs().format('YYYYMMDD')}`, { orientation: 'landscape' })
+
+    // 3) 导出 JSON 备份
+    const json = JSON.stringify(wbsData.value, null, 2)
+    saveAs(new Blob([json], { type: 'application/json' }), `WBS_${opportunityName.value || '项目'}_${dayjs().format('YYYYMMDD')}.json`)
+
+    ElMessage.success('WBS 完整包导出成功（Excel + Word + JSON）')
+  } catch (e) {
+    console.error('[exportAll] 失败:', e)
+    ElMessage.error(`导出失败: ${e.message}`)
+  }
 }
 </script>
 

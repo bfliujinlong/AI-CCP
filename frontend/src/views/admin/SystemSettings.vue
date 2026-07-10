@@ -146,7 +146,7 @@
                 </el-form-item>
 
                 <el-divider content-position="left">单价配置（元/月）</el-divider>
-                <el-table :data="cloudPricingForm.clouds.filter(c => c.enabled)" border size="small" style="margin-bottom: 16px">
+                <el-table :data="enabledClouds" border size="small" style="margin-bottom: 16px">
                   <el-table-column prop="name" label="云厂商" width="120" />
                   <el-table-column label="ECS 4C8G" width="140">
                     <template #default="{ row }">
@@ -489,6 +489,8 @@ const defaultCloudPricing = {
 }
 
 const cloudPricingForm = reactive(JSON.parse(JSON.stringify(defaultCloudPricing)))
+// 只读计算属性：避免 .filter() 创建新数组导致 v-model 失效
+const enabledClouds = computed(() => cloudPricingForm.clouds.filter(c => c.enabled))
 
 // LLM 配置（按 provider 隔离存储）
 const llmProviderPresets = {

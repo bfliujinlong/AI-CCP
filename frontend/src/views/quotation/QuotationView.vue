@@ -762,6 +762,13 @@ async function exportQuotation(format = 'csv') {
 // 初始化
 onMounted(async () => {
   loading.value = true
+  // 兜底超时：5 秒后强制关闭 loading，避免遮罩卡住
+  const loadingTimeout = setTimeout(() => {
+    if (loading.value) {
+      console.warn('[QuotationView] loading timeout, force close')
+      loading.value = false
+    }
+  }, 5000)
   try {
     try {
       const opp = await opportunityApi.get(opportunityId)
@@ -778,6 +785,7 @@ onMounted(async () => {
     // 计算估算
     recalculate()
   } finally {
+    clearTimeout(loadingTimeout)
     loading.value = false
   }
 })
