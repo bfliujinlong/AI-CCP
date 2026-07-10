@@ -850,6 +850,6 @@ const mockCloudPricing = {
 }
 
 export function isDevMode() {
-  // 强制使用 Mock 数据，不依赖 Vite 的 DEV 模式
-  return true
+  // 开发模式用 Mock，生产构建用真实 API
+  return import.meta.env.DEV
 }

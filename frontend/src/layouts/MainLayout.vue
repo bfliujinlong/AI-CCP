@@ -62,7 +62,7 @@
           <el-icon><Cloudy /></el-icon>
           <template #title>多云对比</template>
         </el-menu-item>
-        <el-sub-menu index="admin">
+        <el-sub-menu index="admin" v-if="authStore.isAdmin">
           <template #title>
             <el-icon><Setting /></el-icon>
             <span>管理</span>
@@ -109,7 +109,7 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="profile">个人信息</el-dropdown-item>
-                <el-dropdown-item command="settings">系统设置</el-dropdown-item>
+                <el-dropdown-item v-if="authStore.isAdmin" command="settings">系统设置</el-dropdown-item>
                 <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>

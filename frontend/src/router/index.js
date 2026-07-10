@@ -77,11 +77,13 @@ const routes = [
         path: 'settings',
         name: 'SystemSettings',
         component: () => import('@/views/admin/SystemSettings.vue'),
+        meta: { requiresAdmin: true },
       },
       {
         path: 'accounts',
         name: 'AccountManagement',
         component: () => import('@/views/admin/AccountManagement.vue'),
+        meta: { requiresAdmin: true },
       },
       {
         path: 'test',
@@ -102,6 +104,8 @@ router.beforeEach((to, from, next) => {
   if (to.meta.requiresAuth !== false && !authStore.isAuthenticated) {
     next('/login')
   } else if (to.path === '/login' && authStore.isAuthenticated) {
+    next('/')
+  } else if (to.meta.requiresAdmin && !authStore.isAdmin) {
     next('/')
   } else {
     next()

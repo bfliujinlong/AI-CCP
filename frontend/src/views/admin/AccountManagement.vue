@@ -242,8 +242,8 @@ async function loadAccounts() {
   loading.value = true
   try {
     const res = await accountApi.list({ skip: 0, limit: 100 })
-    accounts.value = res.items || res.data || []
-    totalCount.value = res.total || accounts.value.length
+    accounts.value = Array.isArray(res) ? res : (res.items || res.data || [])
+    totalCount.value = Array.isArray(res) ? res.length : (res.total || accounts.value.length)
   } catch (err) {
     ElMessage.error('加载账户列表失败: ' + (err.message || '未知错误'))
   } finally {

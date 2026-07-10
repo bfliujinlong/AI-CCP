@@ -489,3 +489,12 @@ export function generateWBSByType(projectType, facts, quotation, sow, oppName) {
 }
 
 export { phaseLabels, roleLabels }
+
+const typeNames = {
+  landing_zone: 'Landing Zone', migration: '云迁移', big_data: '大数据平台',
+  hybrid_cloud: '混合云', security: '安全加固', cost_optimization: '成本优化',
+}
+
+export function getProjectTypeName(projectType) {
+  return typeNames[projectType] || projectType
+}

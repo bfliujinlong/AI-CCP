@@ -37,7 +37,7 @@ class GUID(TypeDecorator):
 if settings.DATABASE_URL.startswith("sqlite"):
     JSONType = JSON
 else:
-    from sqlalchemy.dialects.postgresql import JSONType as _JSONType
+    from sqlalchemy.dialects.postgresql import JSONB as _JSONType
 
     JSONType = _JSONType
 
