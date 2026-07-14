@@ -1,0 +1,118 @@
+name: Deploy to ECS
+
+# 触发条件：
+# 1. push 到 main 分支
+# 2. 创建 v* 开头的 tag
+# 3. 手动触发
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要部署的分支/tag/commit (默认 main)'
+        required: false
+        default: 'main'
+
+# 避免并发部署
+concurrency:
+  group: deploy-ecs
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ECS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.ECS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          echo "SSH key configured"
+
+      - name: Get deploy info
+        id: info
+        run: |
+          REF="${{ github.event.inputs.ref || github.ref }}"
+          # 处理 refs/tags/v0.3 -> v0.3, refs/heads/main -> main
+          REF_NAME="${REF#refs/heads/}"
+          REF_NAME="${REF_NAME#refs/tags/}"
+          echo "ref=$REF_NAME" >> $GITHUB_OUTPUT
+          echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "commit_msg=$(git log -1 --pretty=%s | head -c 80)" >> $GITHUB_OUTPUT
+          echo "📍 部署信息:"
+          echo "  - Ref: $REF_NAME"
+          echo "  - Commit: $(git rev-parse --short HEAD)"
+          echo "  - Message: $(git log -1 --pretty=%s)"
+
+      - name: Deploy to ECS
+        env:
+          ECS_HOST: ${{ secrets.ECS_HOST }}
+          ECS_USER: ${{ secrets.ECS_USER }}
+          DEPLOY_REF: ${{ steps.info.outputs.ref }}
+        run: |
+          echo "🚀 开始部署到 ECS $ECS_HOST ..."
+          ssh -o StrictHostKeyChecking=no $ECS_USER@$ECS_HOST bash -s << EOF
+            set -e
+            echo "=== [\$(date '+%H:%M:%S')] 拉取最新代码 ==="
+            cd /opt/aicc
+            git fetch --all --tags
+            git checkout $DEPLOY_REF
+            git pull origin $DEPLOY_REF 2>/dev/null || echo "(已是最新的 commit)"
+            echo ""
+            echo "=== [\$(date '+%H:%M:%S')] 当前版本 ==="
+            git log --oneline -3
+            echo ""
+            echo "=== [\$(date '+%H:%M:%S')] 构建并重启容器 ==="
+            docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build 2>&1 | tail -15
+            echo ""
+            echo "=== [\$(date '+%H:%M:%S')] 等待服务就绪 ==="
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "✅ 后端就绪 (尝试 \$i 次)"
+                break
+              fi
+              sleep 3
+            done
+            echo ""
+            echo "=== [\$(date '+%H:%M:%S')] 服务状态 ==="
+            docker compose -f docker-compose.prod.yml ps --format 'table {{.Name}}\t{{.Status}}' 2>&1
+            echo ""
+            echo "=== [\$(date '+%H:%M:%S')] 健康检查 ==="
+            curl -s http://localhost:8000/health && echo ""
+            curl -s -o /dev/null -w "前端 HTTP状态: %{http_code}\n" http://localhost
+          EOF
+          echo ""
+          echo "✅ 部署完成！"
+
+      - name: Verify deployment
+        env:
+          ECS_HOST: ${{ secrets.ECS_HOST }}
+        run: |
+          echo "🔍 外部访问验证..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://$ECS_HOST)
+          API_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://$ECS_HOST:8000/health)
+          echo "  前端 http://$ECS_HOST → $HTTP_CODE"
+          echo "  后端 http://$ECS_HOST:8000/health → $API_CODE"
+          if [ "$HTTP_CODE" = "200" ] && [ "$API_CODE" = "200" ]; then
+            echo "🎉 部署成功！"
+          else
+            echo "⚠️  部署可能有问题，请检查"
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 部署结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **目标**: http://${{ secrets.ECS_HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **版本**: \`${{ steps.info.outputs.ref }}@${{ steps.info.outputs.short_sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **提交**: ${{ steps.info.outputs.commit_msg }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **账号**: admin / admin123" >> $GITHUB_STEP_SUMMARY
