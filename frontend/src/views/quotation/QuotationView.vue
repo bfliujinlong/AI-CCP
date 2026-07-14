@@ -634,6 +634,7 @@ function recalculate() {
 
 function resetToDefault() {
   mergeInput(input, getDefaultInput())
+  ensureResourceDefaults()
   recalculate()
 }
 
@@ -760,14 +761,46 @@ async function exportQuotation(format = 'csv') {
 }
 
 // 深度合并保存的输入到响应式对象（避免 Object.assign 整体替换导致响应式丢失）
+// 同时跳过 null/undefined，避免覆盖默认值导致 input 框空白
 function mergeInput(target, source) {
   for (const key in source) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) continue
     const sv = source[key]
-    if (sv && typeof sv === 'object' && !Array.isArray(sv)) {
+    if (sv === null || sv === undefined) continue  // 跳过空值，保留默认值
+    if (typeof sv === 'object' && !Array.isArray(sv)) {
       if (!target[key] || typeof target[key] !== 'object') target[key] = {}
       mergeInput(target[key], sv)
+    } else if (typeof sv === 'number' && isNaN(sv)) {
+      continue  // 跳过 NaN
     } else {
       target[key] = sv
+    }
+  }
+}
+
+// 确保 input.resources 字段都有有效数值（防止旧版保存数据结构不匹配）
+function ensureResourceDefaults() {
+  const defaults = getDefaultInput().resources
+  if (!input.resources) input.resources = { ...defaults }
+  else {
+    for (const k in defaults) {
+      if (k === 'databases') {
+        if (!input.resources.databases || typeof input.resources.databases !== 'object') {
+          input.resources.databases = { ...defaults.databases }
+        } else {
+          for (const dbKey in defaults.databases) {
+            const v = input.resources.databases[dbKey]
+            if (v === null || v === undefined || (typeof v === 'number' && isNaN(v))) {
+              input.resources.databases[dbKey] = defaults.databases[dbKey]
+            }
+          }
+        }
+      } else {
+        const v = input.resources[k]
+        if (v === null || v === undefined || (typeof v === 'number' && isNaN(v))) {
+          input.resources[k] = defaults[k]
+        }
+      }
     }
   }
 }
@@ -795,6 +828,8 @@ onMounted(async () => {
     if (saved?.input) {
       mergeInput(input, saved.input)
     }
+    // 确保 resources 字段都有有效数值（兼容旧版保存的数据结构）
+    ensureResourceDefaults()
     // 计算估算
     recalculate()
   } finally {
