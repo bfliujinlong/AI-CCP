@@ -633,7 +633,7 @@ function recalculate() {
 }
 
 function resetToDefault() {
-  Object.assign(input, getDefaultInput())
+  mergeInput(input, getDefaultInput())
   recalculate()
 }
 
@@ -759,6 +759,19 @@ async function exportQuotation(format = 'csv') {
   }
 }
 
+// 深度合并保存的输入到响应式对象（避免 Object.assign 整体替换导致响应式丢失）
+function mergeInput(target, source) {
+  for (const key in source) {
+    const sv = source[key]
+    if (sv && typeof sv === 'object' && !Array.isArray(sv)) {
+      if (!target[key] || typeof target[key] !== 'object') target[key] = {}
+      mergeInput(target[key], sv)
+    } else {
+      target[key] = sv
+    }
+  }
+}
+
 // 初始化
 onMounted(async () => {
   loading.value = true
@@ -777,10 +790,10 @@ onMounted(async () => {
       console.warn('[QuotationView] 加载商机信息失败，使用默认数据:', e)
       opportunityName.value = '未知商机'
     }
-    // 加载已保存的报价
+    // 加载已保存的报价（深合并，保留响应式）
     const saved = getJSON(`aicc_quotation_${opportunityId}`)
     if (saved?.input) {
-      Object.assign(input, saved.input)
+      mergeInput(input, saved.input)
     }
     // 计算估算
     recalculate()
