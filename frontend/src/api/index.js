@@ -45,6 +45,7 @@ export const skillApi = {
   create: (data) => http.post('/skills', data),
   update: (id, data) => http.put(`/skills/${id}`, data),
   delete: (id) => http.delete(`/skills/${id}`),
+  // execute 支持传 llm_config（让后端走真实 LLM）
   execute: (data) => http.post('/skills/execute', data),
   // Skill 学习系统
   saveExecution: (data) => withMock(() => mockApi.skills.saveExecution(data), () => http.post('/skills/executions', data))(),

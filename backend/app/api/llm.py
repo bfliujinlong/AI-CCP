@@ -1,5 +1,4 @@
 from __future__ import annotations
-import re
 from typing import Any, Dict, List
 
 import httpx
@@ -7,52 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user_id
 from app.schemas.llm import LLMChatRequest, LLMChatResponse, LLMTestRequest, LLMTestResponse
+from app.services.llm_service import call_chat, normalize_base_url
 
 router = APIRouter(prefix="/llm", tags=["LLM"])
-
-
-def _normalize_base_url(base_url: str) -> str:
-    """归一化 base_url，确保以 /v1 结尾（OpenAI 兼容约定）。
-
-    用户可能填入:
-      - https://api.deepseek.com        → 补 /v1
-      - https://api.deepseek.com/       → 补 /v1
-      - https://api.deepseek.com/v1     → 保持
-      - https://api.deepseek.com/v1/    → 去尾斜杠
-      - https://ark.cn-beijing.volces.com/api/v3  → 保持（含版本段）
-    规则: 如果末尾路径段不是 v1~v9 形式，则补 /v1。
-    """
-    url = base_url.strip().rstrip("/")
-    # 已包含 /vN 版本段（v1 ~ v9）则保持
-    if re.search(r"/v\d+$", url):
-        return url
-    # 否则补 /v1
-    return f"{url}/v1"
-
-
-async def _call_openai_compatible_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """通用 OpenAI 兼容 chat/completions 代理调用。"""
-    base_url = _normalize_base_url(payload["base_url"])
-    url = f"{base_url}/chat/completions"
-
-    body = {
-        "model": payload["model"],
-        "messages": payload["messages"],
-        "temperature": payload.get("temperature", 0.7),
-        "max_tokens": payload.get("max_tokens", 2048),
-    }
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        res = await client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {payload['api_key']}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-        )
-        res.raise_for_status()
-        return res.json()
 
 
 @router.post("/chat", response_model=LLMChatResponse)
@@ -62,7 +18,14 @@ async def chat(
 ):
     """代理 LLM chat/completions 请求。前端无需直接暴露 API Key 给第三方。"""
     try:
-        data = await _call_openai_compatible_chat(request.model_dump())
+        data = await call_chat(
+            base_url=request.base_url,
+            api_key=request.api_key,
+            model=request.model,
+            messages=[m.model_dump() for m in request.messages],
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+        )
     except httpx.TimeoutException as e:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -103,14 +66,14 @@ async def test(
         {"role": "user", "content": "你好，请回复\"连接成功\"四个字"}
     ]
     try:
-        data = await _call_openai_compatible_chat({
-            "base_url": request.base_url,
-            "api_key": request.api_key,
-            "model": request.model,
-            "messages": messages,
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-        })
+        data = await call_chat(
+            base_url=request.base_url,
+            api_key=request.api_key,
+            model=request.model,
+            messages=messages,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+        )
         content = (
             data.get("choices", [{}])[0]
             .get("message", {})
@@ -150,3 +113,9 @@ async def test(
             message=str(e),
             response=None,
         )
+
+
+@router.get("/normalize-url")
+async def normalize_url_demo(base_url: str, user_id: str = Depends(get_current_user_id)):
+    """调试用：展示 base_url 归一化结果。"""
+    return {"input": base_url, "normalized": normalize_base_url(base_url)}

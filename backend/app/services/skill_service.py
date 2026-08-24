@@ -4,13 +4,13 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.providers import get_ai_provider
 from app.ai.registry import get_builtin_skill_def
 from app.export import save_document
 from app.models.models import Skill
 from app.repositories.skill_repo import SkillRepository
 from app.repositories.factsheet_repo import FactSheetRepository
 from app.schemas.skill import SkillCreate, SkillUpdate, SkillExecuteRequest, SkillExecuteResponse
+from app.services.llm_service import call_structured, mock_structured_output
 
 
 class SkillService:
@@ -53,9 +53,12 @@ class SkillService:
         await self.repo.delete(skill)
 
     async def execute(self, request: SkillExecuteRequest) -> SkillExecuteResponse:
-        """执行 Skill：DB 优先，缺失则 fallback 到内置定义。
+        """执行 Skill。
 
-        链路: Skill → Prompt → LLM → Structured Output → Document(PDF/DOCX/MD)
+        链路: Skill → Prompt → LLM (前端传 llm_config) → Structured Output → Document(PDF/DOCX)
+
+        - 如果请求体带 llm_config（含 api_key/model/base_url），走真实 LLM
+        - 否则走 mock，明确告知用户配置 LLM
         """
         skill = await self.repo.get_by_name(request.skill_name)
 
@@ -74,7 +77,6 @@ class SkillService:
             output_schema = skill.output_schema or {}
             category = skill.category
             skill_name = skill.name
-            # DB 路径：优先读 builtin 的 document_format（Skill model 无此字段）
             builtin = get_builtin_skill_def(skill_name)
             document_format = (builtin or {}).get("document_format", "docx")
 
@@ -83,19 +85,41 @@ class SkillService:
         for key, value in request.inputs.items():
             prompt = prompt.replace(f"{{{key}}}", str(value))
 
-        # 调用 AI Provider
-        ai_provider = get_ai_provider()
-        structured_output = await ai_provider.generate_structured(
-            prompt=prompt,
-            output_schema=output_schema,
-            system_prompt=f"You are a cloud consulting expert. Execute the skill: {skill_name}. Category: {category}",
-        )
+        # 调用 LLM
+        llm_config = request.llm_config or {}
+        llm_used = False
+        llm_model = None
+
+        if llm_config.get("api_key") and llm_config.get("model") and llm_config.get("base_url"):
+            # 走真实 LLM
+            try:
+                structured_output = await call_structured(
+                    base_url=llm_config["base_url"],
+                    api_key=llm_config["api_key"],
+                    model=llm_config["model"],
+                    prompt=prompt,
+                    output_schema=output_schema,
+                    system_prompt=f"You are a cloud consulting expert. Execute the skill: {skill_name}. Category: {category}",
+                    temperature=float(llm_config.get("temperature", 0.3)),
+                    max_tokens=int(llm_config.get("max_tokens", 4096)),
+                )
+                llm_used = True
+                llm_model = llm_config["model"]
+            except Exception as e:
+                # LLM 调用失败时回退 mock，但保留错误信息
+                structured_output = mock_structured_output()
+                structured_output["error"] = f"LLM 调用失败: {str(e)}"
+        else:
+            # 未配置 LLM → mock
+            structured_output = mock_structured_output()
 
         # 自动生成文档（PDF/DOCX/MD）
         document_info = None
         try:
             title = request.title or f"{skill_name} 输出"
             project_meta = request.project_meta or {}
+            if llm_used:
+                project_meta = {**project_meta, "LLM Model": llm_model, "Generated": "AI"}
             document_info = save_document(
                 outputs=structured_output,
                 skill_name=skill_name,
@@ -104,7 +128,6 @@ class SkillService:
                 project_meta=project_meta,
             )
         except Exception as e:
-            # 文档生成失败不影响 skill 输出（避免阻塞主流程）
             print(f"[SkillService] document generation failed for {skill_name}: {e}")
 
         return SkillExecuteResponse(
@@ -112,4 +135,6 @@ class SkillService:
             outputs=structured_output,
             raw_response=str(structured_output),
             document=document_info,
+            llm_used=llm_used,
+            llm_model=llm_model,
         )

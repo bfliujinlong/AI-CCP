@@ -74,7 +74,12 @@
       </el-form>
 
       <div v-if="executeResult" class="execute-result">
-        <el-divider>执行结果</el-divider>
+        <el-divider>
+          <span>执行结果</span>
+          <el-tag v-if="llmStatus === 'real'" type="success" size="small" style="margin-left: 8px">LLM 真实输出</el-tag>
+          <el-tag v-else-if="llmStatus === 'fallback'" type="warning" size="small" style="margin-left: 8px">LLM 失败·回退 mock</el-tag>
+          <el-tag v-else type="info" size="small" style="margin-left: 8px">mock 模式</el-tag>
+        </el-divider>
         <pre>{{ JSON.stringify(executeResult, null, 2) }}</pre>
 
         <!-- 文档下载 -->
@@ -225,6 +230,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { skillApi, factsheetApi } from '@/api'
 import { ElMessage } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
+import { getJSON } from '@/utils/db'
 
 const route = useRoute()
 const router = useRouter()
@@ -237,6 +243,7 @@ const executing = ref(false)
 const submitting = ref(false)
 const executeResult = ref(null)
 const documentInfo = ref(null)  // 当前执行的输出文档信息
+const llmStatus = ref('mock')  // 'real' | 'fallback' | 'mock'
 const createFormRef = ref(null)
 const autoExecuting = ref(false)
 
@@ -328,6 +335,17 @@ function showCreateDialog() {
   createVisible.value = true
 }
 
+// 读取 localStorage 中的 LLM 配置（按 provider 隔离存储）
+function loadLLMConfig() {
+  try {
+    const cfg = getJSON('aicc_llm_config', {})
+    if (cfg.providers && cfg.provider) {
+      return { provider: cfg.provider, ...cfg.providers[cfg.provider] }
+    }
+    return cfg
+  } catch { return {} }
+}
+
 async function handleExecute() {
   if (!currentSkill.value) return
   executing.value = true
@@ -341,6 +359,11 @@ async function handleExecute() {
       ElMessage.error('输入参数 JSON 格式错误')
       return
     }
+
+    // 读取前端 LLM 配置传给后端
+    const llmConfig = loadLLMConfig()
+    const llmEnabled = llmConfig.provider && llmConfig.provider !== 'mock' && llmConfig.api_key
+
     const res = await skillApi.execute({
       skill_name: currentSkill.value.name,
       inputs,
@@ -349,10 +372,27 @@ async function handleExecute() {
         Skill: currentSkill.value.name,
         Category: currentSkill.value.category,
       },
+      llm_config: llmEnabled ? {
+        provider: llmConfig.provider,
+        api_key: llmConfig.api_key,
+        model: llmConfig.model,
+        base_url: llmConfig.base_url,
+        temperature: llmConfig.temperature ?? 0.3,
+        max_tokens: llmConfig.max_tokens ?? 4096,
+      } : null,
     })
     executeResult.value = res.outputs
     documentInfo.value = res.document || null
-    ElMessage.success(documentInfo.value ? `执行完成，已生成 ${documentInfo.value.format.toUpperCase()} 文档` : '执行完成')
+    llmStatus.value = res.llm_used ? 'real' : (llmEnabled ? 'fallback' : 'mock')
+
+    // 明确告知用户是否走了真实 LLM
+    if (res.llm_used) {
+      ElMessage.success(`执行完成（LLM: ${res.llm_model}），已生成 ${documentInfo.value.format.toUpperCase()} 文档`)
+    } else if (llmEnabled) {
+      ElMessage.warning('LLM 调用失败，已回退 mock 输出，请查看 outputs.error')
+    } else {
+      ElMessage.info('执行完成（mock 模式）— 请在系统设置配置 LLM 后获得真实 AI 输出')
+    }
 
     // 根据 Skill 类型自动跳转到对应结果页面
     const skillName = currentSkill.value.name
