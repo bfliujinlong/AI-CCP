@@ -28,6 +28,10 @@
           <el-icon><Opportunity /></el-icon>
           <template #title>商机管理</template>
         </el-menu-item>
+        <el-menu-item index="/meeting-import">
+          <el-icon><VideoCamera /></el-icon>
+          <template #title>会议智能导入</template>
+        </el-menu-item>
         <el-sub-menu index="workflow">
           <template #title>
             <el-icon><Connection /></el-icon>
@@ -78,6 +82,10 @@
         <el-menu-item index="/accounts" @click="router.push('/accounts')">
             <el-icon><User /></el-icon>
             <template #title>账户管理</template>
+          </el-menu-item>
+          <el-menu-item index="/audit-logs" @click="router.push('/audit-logs')">
+            <el-icon><List /></el-icon>
+            <template #title>审计日志</template>
           </el-menu-item>
           <el-menu-item index="/test" @click="router.push('/test')">
             <el-icon><Monitor /></el-icon>
@@ -160,8 +168,10 @@ const pageTitles = {
   '/': 'Dashboard',
   '/customers': '客户管理',
   '/opportunities': '商机管理',
+  '/meeting-import': '会议智能导入',
   '/skills': 'Skill Center',
   '/sow-templates': 'SOW 模板库',
+  '/audit-logs': '审计日志',
   '/cloud-compare': '多云对比',
   '/settings': '系统设置',
   '/accounts': '账户管理',

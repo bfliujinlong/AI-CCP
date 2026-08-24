@@ -853,3 +853,5 @@ export function isDevMode() {
   // 开发模式用 Mock，生产构建用真实 API
   return import.meta.env.DEV
 }
+
+export { callLLM, callLLMStructured, isLLMEnabled, loadLLMConfig }

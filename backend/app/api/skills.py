@@ -3,9 +3,12 @@ from typing import List, Dict, Optional, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
+from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.export import EXPORT_DIR
 from app.schemas.skill import SkillCreate, SkillUpdate, SkillResponse, SkillExecuteRequest, SkillExecuteResponse
 from app.services.skill_service import SkillService
 from app.api.deps import get_current_user_id
@@ -87,3 +90,29 @@ async def execute_skill(
         return await service.execute(request)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.get("/documents/{filename}")
+async def download_skill_document(filename: str, user_id: str = Depends(get_current_user_id)):
+    """下载 Skill 执行生成的文档（PDF/DOCX）。"""
+    # 防止路径穿越
+    safe_filename = Path(filename).name
+    filepath = Path(EXPORT_DIR) / safe_filename
+
+    if not filepath.exists() or not filepath.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document '{safe_filename}' not found")
+
+    # 根据扩展名设置媒体类型
+    media_types = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".md": "text/markdown",
+        ".txt": "text/plain",
+    }
+    media_type = media_types.get(filepath.suffix.lower(), "application/octet-stream")
+
+    return FileResponse(
+        path=str(filepath),
+        filename=safe_filename,
+        media_type=media_type,
+    )

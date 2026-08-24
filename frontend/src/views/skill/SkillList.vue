@@ -76,6 +76,21 @@
       <div v-if="executeResult" class="execute-result">
         <el-divider>执行结果</el-divider>
         <pre>{{ JSON.stringify(executeResult, null, 2) }}</pre>
+
+        <!-- 文档下载 -->
+        <div v-if="documentInfo" class="document-download">
+          <el-divider>输出文档</el-divider>
+          <el-alert type="success" :closable="false">
+            <template #title>
+              <span>已生成文档：{{ documentInfo.filename }} ({{ formatSize(documentInfo.size_bytes) }})</span>
+            </template>
+            <template #default>
+              <el-button type="primary" size="small" @click="downloadDocument">
+                <el-icon><Download /></el-icon> 下载 {{ documentInfo.format.toUpperCase() }}
+              </el-button>
+            </template>
+          </el-alert>
+        </div>
       </div>
     </el-dialog>
 
@@ -209,6 +224,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { skillApi, factsheetApi } from '@/api'
 import { ElMessage } from 'element-plus'
+import { Download } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -220,6 +236,7 @@ const currentSkill = ref(null)
 const executing = ref(false)
 const submitting = ref(false)
 const executeResult = ref(null)
+const documentInfo = ref(null)  // 当前执行的输出文档信息
 const createFormRef = ref(null)
 const autoExecuting = ref(false)
 
@@ -295,6 +312,7 @@ function showSkillDetail(skill) {
   currentSkill.value = { ...skill }
   executeForm.inputsJson = JSON.stringify(skill.input_schema || {}, null, 2)
   executeResult.value = null
+  documentInfo.value = null
   detailVisible.value = true
 }
 
@@ -314,6 +332,7 @@ async function handleExecute() {
   if (!currentSkill.value) return
   executing.value = true
   executeResult.value = null
+  documentInfo.value = null
   try {
     let inputs = {}
     try {
@@ -325,10 +344,16 @@ async function handleExecute() {
     const res = await skillApi.execute({
       skill_name: currentSkill.value.name,
       inputs,
+      title: `${currentSkill.value.name} 输出`,
+      project_meta: {
+        Skill: currentSkill.value.name,
+        Category: currentSkill.value.category,
+      },
     })
     executeResult.value = res.outputs
-    ElMessage.success('执行完成')
-    
+    documentInfo.value = res.document || null
+    ElMessage.success(documentInfo.value ? `执行完成，已生成 ${documentInfo.value.format.toUpperCase()} 文档` : '执行完成')
+
     // 根据 Skill 类型自动跳转到对应结果页面
     const skillName = currentSkill.value.name
     if (skillName === 'Generate-Quotation') {
@@ -343,6 +368,36 @@ async function handleExecute() {
   } finally {
     executing.value = false
   }
+}
+
+// 下载输出文档
+async function downloadDocument() {
+  if (!documentInfo.value) return
+  try {
+    const token = localStorage.getItem('token')
+    const res = await fetch(documentInfo.value.url, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = documentInfo.value.filename
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('文档下载已开始')
+  } catch (e) {
+    ElMessage.error(`下载失败: ${e.message}`)
+  }
+}
+
+function formatSize(bytes) {
+  if (!bytes) return '0 B'
+  const b = parseInt(bytes)
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  return `${(b / 1024 / 1024).toFixed(2)} MB`
 }
 
 async function handleCreate() {
@@ -718,5 +773,13 @@ async function handleImport() {
 
 .quick-import-list .el-button {
   margin: 0;
+}
+
+.document-download {
+  margin-top: 12px;
+}
+
+.document-download .el-alert {
+  margin-bottom: 8px;
 }
 </style>

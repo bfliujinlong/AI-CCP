@@ -39,12 +39,13 @@ export const factsheetApi = {
 }
 
 export const skillApi = {
-  list: (params) => withMock(() => mockApi.skills.list(), () => http.get('/skills', { params }))(),
-  get: (id) => withMock(() => mockApi.skills.get(id), () => http.get(`/skills/${id}`))(),
+  // Skill 强制走后端 API（不再走 mock），由后端 registry seed 内置 skill
+  list: (params) => http.get('/skills', { params }),
+  get: (id) => http.get(`/skills/${id}`),
   create: (data) => http.post('/skills', data),
   update: (id, data) => http.put(`/skills/${id}`, data),
   delete: (id) => http.delete(`/skills/${id}`),
-  execute: (data) => withMock(() => mockApi.skills.execute(data), () => http.post('/skills/execute', data))(),
+  execute: (data) => http.post('/skills/execute', data),
   // Skill 学习系统
   saveExecution: (data) => withMock(() => mockApi.skills.saveExecution(data), () => http.post('/skills/executions', data))(),
   getHistory: (params) => withMock(() => mockApi.skills.getHistory(params), () => http.get('/skills/executions', { params }))(),
@@ -71,6 +72,37 @@ export const cloudPricingApi = {
   getNetworkPrices: (region) => withMock(() => mockApi.cloudPricing.getNetworkPrices(region), () => http.get('/cloud-pricing/network', { params: { region } }))(),
   calculateCost: (data) => withMock(() => mockApi.cloudPricing.calculateCost(data), () => http.post('/cloud-pricing/calculate', data))(),
   getStatus: () => withMock(() => mockApi.cloudPricing.getStatus(), () => http.get('/cloud-pricing/status'))(),
+}
+
+export const meetingHistoryApi = {
+  record: (data) => http.post('/meeting-analysis/record', data),
+  list: (params) => http.get('/meeting-analysis/history', { params }),
+}
+
+export const auditLogApi = {
+  list: (params) => http.get('/audit-logs', { params }),
+  stats: () => http.get('/audit-logs/stats'),
+}
+
+export const meetingApi = {
+  extractText: (file) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return http.post('/meeting-analysis/extract-text', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  transcribe: (file, llmConfig) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('api_key', llmConfig.api_key)
+    formData.append('base_url', llmConfig.base_url)
+    formData.append('model', llmConfig.transcribe_model || 'whisper-1')
+    return http.post('/meeting-analysis/transcribe', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000,
+    })
+  },
 }
 
 export const accountApi = {

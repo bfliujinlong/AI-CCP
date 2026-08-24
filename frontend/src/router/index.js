@@ -69,6 +69,11 @@ const routes = [
         component: () => import('@/views/cloud/CloudCompare.vue'),
       },
       {
+        path: 'meeting-import',
+        name: 'MeetingImport',
+        component: () => import('@/views/meeting/MeetingImport.vue'),
+      },
+      {
         path: 'skills',
         name: 'Skills',
         component: () => import('@/views/skill/SkillList.vue'),
@@ -83,6 +88,12 @@ const routes = [
         path: 'accounts',
         name: 'AccountManagement',
         component: () => import('@/views/admin/AccountManagement.vue'),
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: 'audit-logs',
+        name: 'AuditLogs',
+        component: () => import('@/views/admin/AuditLog.vue'),
         meta: { requiresAdmin: true },
       },
       {

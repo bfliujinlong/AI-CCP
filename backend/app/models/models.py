@@ -169,3 +169,45 @@ class FactRegistry(Base):
     required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     category: Mapped[Optional[str]] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class MeetingImport(Base):
+    """会议导入记录 - 记录每次会议智能导入的操作历史"""
+    __tablename__ = "meeting_imports"
+
+    id: Mapped[_uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_uuid.uuid4)
+    user_id: Mapped[Optional[_uuid.UUID]] = mapped_column(GUID(), ForeignKey("users.id"), index=True)
+    username: Mapped[Optional[str]] = mapped_column(String(100))
+    customer_id: Mapped[Optional[_uuid.UUID]] = mapped_column(GUID())
+    customer_name: Mapped[Optional[str]] = mapped_column(String(200))
+    opportunity_id: Mapped[Optional[_uuid.UUID]] = mapped_column(GUID())
+    opportunity_name: Mapped[Optional[str]] = mapped_column(String(200))
+    project_type: Mapped[Optional[str]] = mapped_column(String(100))
+    input_type: Mapped[Optional[str]] = mapped_column(String(50))  # text / file / example
+    input_filename: Mapped[Optional[str]] = mapped_column(String(255))
+    meeting_summary: Mapped[Optional[str]] = mapped_column(Text)  # 截取前500字
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="completed")  # completed / failed
+    has_quotation: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_sow: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_wbs: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+    user: Mapped[Optional["User"]] = relationship("User", foreign_keys=[user_id])
+
+
+class AuditLog(Base):
+    """审计日志 - 记录所有 API 访问和操作"""
+    __tablename__ = "audit_logs"
+
+    id: Mapped[_uuid.UUID] = mapped_column(GUID(), primary_key=True, default=_uuid.uuid4)
+    user_id: Mapped[Optional[_uuid.UUID]] = mapped_column(GUID(), index=True)
+    username: Mapped[Optional[str]] = mapped_column(String(100))
+    ip_address: Mapped[Optional[str]] = mapped_column(String(50), index=True)
+    method: Mapped[str] = mapped_column(String(10), nullable=False)
+    path: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
+    status_code: Mapped[Optional[int]] = mapped_column(Integer)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    user_agent: Mapped[Optional[str]] = mapped_column(String(500))
+    action: Mapped[Optional[str]] = mapped_column(String(200))  # e.g. "login", "create_customer", "meeting_import"
+    detail: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)

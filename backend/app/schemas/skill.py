@@ -43,9 +43,12 @@ class SkillResponse(SkillBase):
 class SkillExecuteRequest(BaseModel):
     skill_name: str
     inputs: dict[str, Any] = Field(default_factory=dict)
+    title: str | None = None  # 文档标题
+    project_meta: dict[str, Any] | None = None  # 项目元数据（写入文档头部）
 
 
 class SkillExecuteResponse(BaseModel):
     skill_name: str
     outputs: dict[str, Any]
     raw_response: str | None = None
+    document: dict[str, Any] | None = None  # {"filename", "format", "url", "size_bytes"}

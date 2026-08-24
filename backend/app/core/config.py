@@ -9,8 +9,6 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
     API_V1_STR: str = "/api/v1"
 
-    # Whether to auto-create tables via SQLAlchemy (dev only).
-    # In production, set AUTO_CREATE_TABLES=false and use alembic upgrade head.
     AUTO_CREATE_TABLES: bool = True
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./aicc.db"
@@ -29,8 +27,15 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 1440
 
+    # 云端 Qwen API（回退用）
     QWEN_API_KEY: str = ""
     QWEN_MODEL: str = "qwen-plus"
+
+    # 本地 Ollama 配置
+    OLLAMA_ENABLED: bool = False
+    OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
+    OLLAMA_MODEL: str = "qwen3.5:4b"
+    OLLAMA_TIMEOUT: int = 120  # 纯CPU推理较慢，默认2分钟超时
 
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
 
